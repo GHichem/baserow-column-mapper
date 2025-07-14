@@ -46,11 +46,13 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
       const updateResult = await updateResponse.json();
       console.log('Successfully updated existing record:', updateResult);
       
-      // Store file info for mapping page
+      // Store file info for mapping page - read file content directly
+      const fileContent = await data.file.text();
       sessionStorage.setItem('uploadedFileInfo', JSON.stringify({
         file: { url: existingRecord.Datei?.[0]?.url || '' },
         userData: data,
-        fileName: data.file.name
+        fileName: data.file.name,
+        fileContent: fileContent // Store the actual file content
       }));
       
       return;
@@ -77,11 +79,15 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
     const fileUploadResult = await fileUploadResponse.json();
     console.log('File uploaded successfully:', fileUploadResult);
     
+    // Read file content and store it
+    const fileContent = await data.file.text();
+    
     // Store file info in session for the mapping page
     sessionStorage.setItem('uploadedFileInfo', JSON.stringify({
       file: fileUploadResult,
       userData: data,
-      fileName: data.file.name
+      fileName: data.file.name,
+      fileContent: fileContent // Store the actual file content
     }));
     
     // Then, create a row in the table with the form data and file reference
@@ -172,7 +178,7 @@ export const getTableSchema = async (tableId: string) => {
   }
 };
 
-// Parse CSV/Excel file to get headers using the uploaded file URL
+// Parse CSV/Excel file to get headers using stored file content
 export const parseFileHeaders = async (file: File): Promise<string[]> => {
   try {
     // Get the uploaded file info from session storage
@@ -182,25 +188,22 @@ export const parseFileHeaders = async (file: File): Promise<string[]> => {
     }
 
     const fileInfo = JSON.parse(uploadedFileInfo);
-    const fileUrl = fileInfo.file.url;
-
-    if (!fileUrl) {
-      throw new Error('No file URL found');
+    
+    // Use stored file content instead of fetching from URL
+    const content = fileInfo.fileContent;
+    
+    if (!content) {
+      throw new Error('No file content found');
     }
 
-    // Fetch the file content from Baserow
-    const response = await fetch(fileUrl);
-    if (!response.ok) {
-      throw new Error('Failed to fetch file content');
-    }
-
-    const content = await response.text();
+    console.log('File content preview:', content.substring(0, 200));
     
     if (file.name.toLowerCase().endsWith('.csv') || fileInfo.file.mime_type === 'text/csv') {
       // Parse CSV
       const lines = content.split('\n');
       if (lines.length > 0) {
         const headers = lines[0].split(',').map(header => header.trim().replace(/"/g, ''));
+        console.log('Parsed headers:', headers);
         return headers.filter(header => header.length > 0);
       } else {
         throw new Error('CSV file appears to be empty');
@@ -219,17 +222,18 @@ export const parseFileHeaders = async (file: File): Promise<string[]> => {
 // Process the mapped data and create records in target table
 export const processImportData = async (mappings: Record<string, string>): Promise<{ total: number, created: number, updated: number }> => {
   try {
-    // Get file content and parse it
+    // Get file content from stored info
     const uploadedFileInfo = sessionStorage.getItem('uploadedFileInfo');
     if (!uploadedFileInfo) {
       throw new Error('No uploaded file info found');
     }
 
     const fileInfo = JSON.parse(uploadedFileInfo);
-    const fileUrl = fileInfo.file.url;
+    const content = fileInfo.fileContent;
 
-    const response = await fetch(fileUrl);
-    const content = await response.text();
+    if (!content) {
+      throw new Error('No file content found');
+    }
     
     const lines = content.split('\n').filter(line => line.trim().length > 0);
     const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
