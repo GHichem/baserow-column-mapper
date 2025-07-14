@@ -175,7 +175,7 @@ const ColumnMappingPage = () => {
             <div className="text-left bg-gray-50 p-4 rounded-lg mb-6">
               <h3 className="font-semibold text-gray-800 mb-2">Verwendete Spalten-Zuordnungen:</h3>
               <div className="space-y-1">
-                {Object.entries(importResults.mappings).map(([userCol, targetCol]) => (
+                {Object.entries(importResults.mappings).map(([userCol, targetCol]: [string, string]) => (
                   <div key={userCol} className="flex items-center gap-2 text-sm">
                     <span className="font-mono bg-white px-2 py-1 rounded">{userCol}</span>
                     <span>→</span>
