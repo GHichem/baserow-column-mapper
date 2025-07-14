@@ -105,16 +105,12 @@ const FileUploadForm = () => {
     setIsSubmitting(true);
 
     try {
-      // Store the original file for the mapping page
-      const fileReader = new FileReader();
-      fileReader.onload = () => {
-        sessionStorage.setItem('originalFile', JSON.stringify({
-          content: fileReader.result,
-          name: formData.file!.name,
-          type: formData.file!.type,
-        }));
-      };
-      fileReader.readAsText(formData.file!);
+      // Store only basic file info instead of entire content
+      sessionStorage.setItem('originalFile', JSON.stringify({
+        name: formData.file!.name,
+        type: formData.file!.type,
+        size: formData.file!.size,
+      }));
 
       await uploadToBaserow({
         vorname: formData.vorname,

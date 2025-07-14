@@ -17,6 +17,45 @@ const BASEROW_CONFIG = {
 
 export const uploadToBaserow = async (data: UploadData): Promise<void> => {
   try {
+    // Check for existing record first
+    const existingRecord = await findExistingRecord(data.vorname, data.nachname, data.email, data.company);
+    
+    if (existingRecord) {
+      // Update existing record instead of creating new one
+      console.log('Found existing record, updating instead of creating new one');
+      
+      const updateResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.tableId}/${existingRecord.id}/?user_field_names=true`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          Vorname: data.vorname,
+          Nachname: data.nachname,
+          EMAIL: data.email,
+          Company: data.company,
+          Dateiname: data.file.name,
+        }),
+      });
+
+      if (!updateResponse.ok) {
+        throw new Error('Failed to update existing record');
+      }
+
+      const updateResult = await updateResponse.json();
+      console.log('Successfully updated existing record:', updateResult);
+      
+      // Store file info for mapping page
+      sessionStorage.setItem('uploadedFileInfo', JSON.stringify({
+        file: { url: existingRecord.Datei?.[0]?.url || '' },
+        userData: data,
+        fileName: data.file.name
+      }));
+      
+      return;
+    }
+
     // First, upload the file to Baserow
     const fileFormData = new FormData();
     fileFormData.append('file', data.file);
@@ -80,6 +119,34 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
   }
 };
 
+// Helper function to find existing records
+const findExistingRecord = async (vorname: string, nachname: string, email: string, company: string) => {
+  try {
+    const response = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.tableId}/?user_field_names=true`, {
+      headers: {
+        'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const data = await response.json();
+    const existingRecord = data.results?.find((row: any) => 
+      row.Vorname?.toLowerCase() === vorname.toLowerCase() &&
+      row.Nachname?.toLowerCase() === nachname.toLowerCase() &&
+      row.EMAIL?.toLowerCase() === email.toLowerCase() &&
+      row.Company?.toLowerCase() === company.toLowerCase()
+    );
+
+    return existingRecord || null;
+  } catch (error) {
+    console.error('Error checking for existing records:', error);
+    return null;
+  }
+};
+
 // Get table schema from Baserow
 export const getTableSchema = async (tableId: string) => {
   try {
@@ -105,52 +172,98 @@ export const getTableSchema = async (tableId: string) => {
   }
 };
 
-// Parse CSV/Excel file to get headers
+// Parse CSV/Excel file to get headers using the uploaded file URL
 export const parseFileHeaders = async (file: File): Promise<string[]> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
+  try {
+    // Get the uploaded file info from session storage
+    const uploadedFileInfo = sessionStorage.getItem('uploadedFileInfo');
+    if (!uploadedFileInfo) {
+      throw new Error('No uploaded file info found');
+    }
+
+    const fileInfo = JSON.parse(uploadedFileInfo);
+    const fileUrl = fileInfo.file.url;
+
+    if (!fileUrl) {
+      throw new Error('No file URL found');
+    }
+
+    // Fetch the file content from Baserow
+    const response = await fetch(fileUrl);
+    if (!response.ok) {
+      throw new Error('Failed to fetch file content');
+    }
+
+    const content = await response.text();
     
-    reader.onload = (e) => {
-      try {
-        const content = e.target?.result as string;
-        
-        if (file.name.toLowerCase().endsWith('.csv')) {
-          // Parse CSV
-          const lines = content.split('\n');
-          if (lines.length > 0) {
-            const headers = lines[0].split(',').map(header => header.trim().replace(/"/g, ''));
-            resolve(headers);
-          } else {
-            reject(new Error('CSV file appears to be empty'));
-          }
-        } else {
-          // For Excel files, we'll need a more sophisticated approach
-          // For now, let's assume the user will upload CSV files
-          reject(new Error('Excel files not yet supported for header parsing'));
-        }
-      } catch (error) {
-        reject(error);
+    if (file.name.toLowerCase().endsWith('.csv') || fileInfo.file.mime_type === 'text/csv') {
+      // Parse CSV
+      const lines = content.split('\n');
+      if (lines.length > 0) {
+        const headers = lines[0].split(',').map(header => header.trim().replace(/"/g, ''));
+        return headers.filter(header => header.length > 0);
+      } else {
+        throw new Error('CSV file appears to be empty');
       }
-    };
-    
-    reader.onerror = () => reject(new Error('Failed to read file'));
-    reader.readAsText(file);
-  });
+    } else {
+      // For Excel files, we'll need a more sophisticated approach
+      // For now, let's assume the user will upload CSV files
+      throw new Error('Excel files not yet supported for header parsing');
+    }
+  } catch (error) {
+    console.error('Error parsing file headers:', error);
+    throw error;
+  }
 };
 
-// Create new table with mapped data
-export const createTableWithData = async (tableName: string, mappedData: any[], columnMappings: Record<string, string>) => {
+// Process the mapped data and create records in target table
+export const processImportData = async (mappings: Record<string, string>): Promise<{ total: number, created: number, updated: number }> => {
   try {
-    // This would require creating a new table in Baserow
-    // For now, we'll simulate this process
-    console.log('Creating table:', tableName, 'with data:', mappedData, 'and mappings:', columnMappings);
+    // Get file content and parse it
+    const uploadedFileInfo = sessionStorage.getItem('uploadedFileInfo');
+    if (!uploadedFileInfo) {
+      throw new Error('No uploaded file info found');
+    }
+
+    const fileInfo = JSON.parse(uploadedFileInfo);
+    const fileUrl = fileInfo.file.url;
+
+    const response = await fetch(fileUrl);
+    const content = await response.text();
     
-    // In a real implementation, you'd call Baserow's create table API
-    // followed by inserting the mapped data
+    const lines = content.split('\n').filter(line => line.trim().length > 0);
+    const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
     
-    return { success: true, tableId: 'new_table_id' };
+    let created = 0;
+    let updated = 0;
+
+    // Process each data row (skip header)
+    for (let i = 1; i < lines.length; i++) {
+      const values = lines[i].split(',').map(v => v.trim().replace(/"/g, ''));
+      
+      // Map the values according to the column mappings
+      const mappedData: any = {};
+      
+      headers.forEach((header, index) => {
+        if (mappings[header] && values[index]) {
+          mappedData[mappings[header]] = values[index];
+        }
+      });
+
+      // Only process if we have some mapped data
+      if (Object.keys(mappedData).length > 0) {
+        const result = await upsertRecord(mappedData);
+        if (result.action === 'created') {
+          created++;
+        } else if (result.action === 'updated') {
+          updated++;
+        }
+      }
+    }
+
+    return { total: created + updated, created, updated };
   } catch (error) {
-    console.error('Error creating table:', error);
+    console.error('Error processing import data:', error);
     throw error;
   }
 };
@@ -158,12 +271,30 @@ export const createTableWithData = async (tableName: string, mappedData: any[], 
 // Check if record exists and update or create
 export const upsertRecord = async (recordData: any) => {
   try {
-    // First, search for existing record
-    const searchParams = new URLSearchParams({
-      search: `${recordData.Vorname} ${recordData.Nachname} ${recordData.EMAIL} ${recordData.Company}`,
-    });
+    // First, search for existing record based on key fields
+    const searchFields = ['Vorname', 'Nachname', 'EMAIL', 'Company'];
+    const searchValues = searchFields.map(field => recordData[field]).filter(Boolean);
     
-    const searchResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.tableId}/?${searchParams}`, {
+    if (searchValues.length === 0) {
+      // If no key fields, just create
+      const createResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.targetTableId}/?user_field_names=true`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(recordData),
+      });
+      
+      if (!createResponse.ok) {
+        throw new Error('Failed to create new record');
+      }
+      
+      return { action: 'created', record: await createResponse.json() };
+    }
+
+    // Search for existing records
+    const searchResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.targetTableId}/?user_field_names=true`, {
       headers: {
         'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
       },
@@ -182,7 +313,7 @@ export const upsertRecord = async (recordData: any) => {
       
       if (exactMatch) {
         // Update existing record
-        const updateResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.tableId}/${exactMatch.id}/?user_field_names=true`, {
+        const updateResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.targetTableId}/${exactMatch.id}/?user_field_names=true`, {
           method: 'PATCH',
           headers: {
             'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
@@ -200,7 +331,7 @@ export const upsertRecord = async (recordData: any) => {
     }
     
     // Create new record if no match found
-    const createResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.tableId}/?user_field_names=true`, {
+    const createResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.targetTableId}/?user_field_names=true`, {
       method: 'POST',
       headers: {
         'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,

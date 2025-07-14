@@ -6,6 +6,7 @@ import ColumnMapping from '@/components/ColumnMapping';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { AlertCircle, CheckCircle, FileSpreadsheet } from 'lucide-react';
+import { processImportData } from '@/utils/baserowApi';
 
 interface UploadedFileInfo {
   file: any;
@@ -51,9 +52,8 @@ const ColumnMappingPage = () => {
       // Reconstruct the file object if available
       if (savedFile) {
         const fileData = JSON.parse(savedFile);
-        // Note: In a real app, you'd need to reconstruct the File object properly
-        // For now, we'll create a mock file for demonstration
-        const reconstructedFile = new File([''], fileInfo.fileName, { type: 'text/csv' });
+        // Create a mock file for demonstration
+        const reconstructedFile = new File([''], fileInfo.fileName, { type: fileData.type || 'text/csv' });
         setOriginalFile(reconstructedFile);
       }
 
@@ -75,28 +75,19 @@ const ColumnMappingPage = () => {
       console.log('Column mappings completed:', mappings);
       console.log('File info:', uploadedFileInfo);
       
-      // Simulate processing the file with mappings
-      // In a real implementation, you would:
-      // 1. Read the entire file content
-      // 2. Parse each row according to the mappings
-      // 3. Check for existing records (firstname + lastname + email + company)
-      // 4. Either update existing records or create new ones
-      
-      // For demonstration, we'll show a success message
-      const processedRecords = Math.floor(Math.random() * 100) + 1;
-      const updatedRecords = Math.floor(processedRecords * 0.3);
-      const newRecords = processedRecords - updatedRecords;
+      // Process the actual file data with mappings
+      const results = await processImportData(mappings);
       
       setImportResults({
-        total: processedRecords,
-        updated: updatedRecords,
-        created: newRecords,
+        total: results.total,
+        updated: results.updated,
+        created: results.created,
         mappings,
       });
       
       toast({
         title: "Import erfolgreich",
-        description: `${processedRecords} Datensätze verarbeitet. ${newRecords} neue Einträge, ${updatedRecords} aktualisiert.`,
+        description: `${results.total} Datensätze verarbeitet. ${results.created} neue Einträge, ${results.updated} aktualisiert.`,
       });
 
     } catch (error) {
