@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -21,6 +20,7 @@ interface ColumnMapping {
   isMatched: boolean;
   similarity: number;
   isIgnored: boolean;
+  filter?: string; // <-- add this line
 }
 
 const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingComplete, onBack }) => {
@@ -86,7 +86,7 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
   const handleMappingChange = (userColumn: string, targetColumn: string) => {
     setMappings(prev => {
       const updated = { ...prev };
-      
+
       // Remove previous mapping if exists
       Object.keys(updated).forEach(key => {
         if (updated[key].targetColumn === targetColumn && key !== userColumn) {
@@ -98,7 +98,7 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
           };
         }
       });
-      
+
       // Set new mapping
       if (targetColumn === 'ignore') {
         updated[userColumn] = {
@@ -107,6 +107,7 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
           isMatched: false,
           similarity: 0,
           isIgnored: true,
+          filter: "", // reset filter
         };
       } else {
         updated[userColumn] = {
@@ -115,9 +116,10 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
           isMatched: true,
           similarity: calculateSimilarity(userColumn, targetColumn),
           isIgnored: false,
+          filter: "", // reset filter
         };
       }
-      
+
       return updated;
     });
   };
@@ -172,6 +174,16 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
     const unmapped = total - matched - ignored;
     
     return { total, matched, ignored, unmapped };
+  };
+
+  const handleFilterChange = (userColumn: string, filterValue: string) => {
+    setMappings(prev => ({
+      ...prev,
+      [userColumn]: {
+        ...prev[userColumn],
+        filter: filterValue,
+      },
+    }));
   };
 
   if (isLoading) {
@@ -287,10 +299,23 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
                               <SelectValue placeholder="Zielfeld auswählen..." />
                             </SelectTrigger>
                             <SelectContent>
+                              {/* Filter input */}
+                              <div className="p-2">
+                                <input
+                                  type="text"
+                                  placeholder="Suchen..."
+                                  value={mapping.filter || ""}
+                                  onChange={e => handleFilterChange(userColumn, e.target.value)}
+                                  className="w-full border rounded px-2 py-1 mb-2 text-sm"
+                                  autoFocus
+                                />
+                              </div>
                               <SelectItem value="ignore">
                                 <span className="text-orange-600">Ignorieren</span>
                               </SelectItem>
-                              {availableColumns.map(column => (
+                              {(availableColumns.filter(col =>
+                                !mapping.filter || col.toLowerCase().includes(mapping.filter.toLowerCase())
+                              )).map(column => (
                                 <SelectItem key={column} value={column}>
                                   {column}
                                 </SelectItem>

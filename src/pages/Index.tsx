@@ -27,7 +27,7 @@ const Index = () => {
         {/* Footer */}
         <div className="text-center mt-8">
           <p className="text-sm text-gray-500">
-            © 2024 MLLER GmbH • Impressum | Datenschutzerklärung
+             © 2025 XiLLeR GmbH - <a href="https://www.xiller.de/Impressum/" className="hover:text-white transition-colors">Impressum</a> | <a href="https://www.xiller.de/datenschutzerklaerung/" className="hover:text-white transition-colors">Datenschutzerklärung</a>
           </p>
           <p className="text-xs text-gray-400 mt-1">
             Konzeption, Design, Programmierung: Beste Medien Werbe Agentur

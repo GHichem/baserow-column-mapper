@@ -9,6 +9,7 @@ interface UploadData {
 
 // Configuration - Using your provided Baserow instance
 const BASEROW_CONFIG = {
+  jwtToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzUyNDk5OTMyLCJpYXQiOjE3NTI0OTkzMzIsImp0aSI6ImVhYmEwMWMzZmIzZTQ4YjdiOGUxMWU4NmQxM2ZmM2MzIiwidXNlcl9pZCI6OH0.QPUkxHOXnPg-CjwHf7zIySDm_c4zN_EkXQ3BN5YpHeE',
   apiToken: 'ZDLLQU57ljuMiGEwKk5DPaAjBXwFLwxR',
   tableId: '787',
   targetTableId: '790',
