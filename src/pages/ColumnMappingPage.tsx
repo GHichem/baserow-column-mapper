@@ -5,7 +5,7 @@ import { useToast } from '@/hooks/use-toast';
 import ColumnMapping from '@/components/ColumnMapping';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { AlertCircle, CheckCircle, FileSpreadsheet } from 'lucide-react';
+import { AlertCircle, CheckCircle, FileSpreadsheet, ExternalLink } from 'lucide-react';
 import { processImportData } from '@/utils/baserowApi';
 
 interface UploadedFileInfo {
@@ -75,19 +75,20 @@ const ColumnMappingPage = () => {
       console.log('Column mappings completed:', mappings);
       console.log('File info:', uploadedFileInfo);
       
-      // Process the actual file data with mappings
+      // Process the actual file data with mappings and create new table
       const results = await processImportData(mappings);
       
       setImportResults({
         total: results.total,
         updated: results.updated,
         created: results.created,
+        newTableId: results.newTableId,
         mappings,
       });
       
       toast({
         title: "Import erfolgreich",
-        description: `${results.total} Datensätze verarbeitet. ${results.created} neue Einträge, ${results.updated} aktualisiert.`,
+        description: `Neue Tabelle erstellt! ${results.total} Datensätze importiert.`,
       });
 
     } catch (error) {
@@ -108,6 +109,13 @@ const ColumnMappingPage = () => {
     sessionStorage.removeItem('uploadedFileInfo');
     sessionStorage.removeItem('originalFile');
     navigate('/');
+  };
+
+  const handleViewTable = () => {
+    if (importResults?.newTableId) {
+      const tableUrl = `https://baserow.app-inventor.org/database/139/table/${importResults.newTableId}`;
+      window.open(tableUrl, '_blank');
+    }
   };
 
   if (isLoading) {
@@ -146,20 +154,17 @@ const ColumnMappingPage = () => {
         <Card className="w-full max-w-2xl">
           <CardContent className="p-8 text-center">
             <CheckCircle className="h-16 w-16 text-green-500 mx-auto mb-6" />
-            <h2 className="text-2xl font-bold text-gray-800 mb-4">Import erfolgreich abgeschlossen!</h2>
+            <h2 className="text-2xl font-bold text-gray-800 mb-4">Neue Tabelle erfolgreich erstellt!</h2>
             
-            <div className="grid grid-cols-3 gap-4 mb-8">
-              <div className="bg-blue-50 p-4 rounded-lg">
-                <div className="text-2xl font-bold text-blue-600">{importResults.total}</div>
-                <div className="text-sm text-gray-600">Gesamt verarbeitet</div>
-              </div>
+            <div className="bg-blue-50 p-4 rounded-lg mb-6">
+              <h3 className="font-semibold text-blue-800 mb-2">Neue Tabelle ID:</h3>
+              <div className="font-mono text-lg text-blue-600">{importResults.newTableId}</div>
+            </div>
+            
+            <div className="grid grid-cols-1 gap-4 mb-8">
               <div className="bg-green-50 p-4 rounded-lg">
                 <div className="text-2xl font-bold text-green-600">{importResults.created}</div>
-                <div className="text-sm text-gray-600">Neue Einträge</div>
-              </div>
-              <div className="bg-orange-50 p-4 rounded-lg">
-                <div className="text-2xl font-bold text-orange-600">{importResults.updated}</div>
-                <div className="text-sm text-gray-600">Aktualisiert</div>
+                <div className="text-sm text-gray-600">Datensätze importiert</div>
               </div>
             </div>
 
@@ -177,7 +182,14 @@ const ColumnMappingPage = () => {
             </div>
             
             <div className="flex gap-4 justify-center">
-              <Button onClick={handleStartOver} className="bg-gradient-to-r from-blue-600 to-purple-600">
+              <Button 
+                onClick={handleViewTable} 
+                className="bg-gradient-to-r from-green-600 to-blue-600"
+              >
+                <ExternalLink className="h-4 w-4 mr-2" />
+                Tabelle anzeigen
+              </Button>
+              <Button onClick={handleStartOver} variant="outline">
                 <FileSpreadsheet className="h-4 w-4 mr-2" />
                 Neue Datei hochladen
               </Button>
