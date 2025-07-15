@@ -1,3 +1,4 @@
+
 interface UploadData {
   vorname: string;
   nachname: string;
@@ -13,7 +14,7 @@ const BASEROW_CONFIG = {
   tableId: '787',
   targetTableId: '790',
   baseUrl: 'https://baserow.app-inventor.org',
-  databaseId: '59', // Your database ID
+  databaseId: '207', // Fixed: Changed from '59' to '207' to match your working curl command
   // JWT Authentication credentials
   username: 'hgu@xiller.com',
   password: 'fEifpCnv5HpKVVv'
