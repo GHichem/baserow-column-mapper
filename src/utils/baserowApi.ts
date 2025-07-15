@@ -13,7 +13,37 @@ const BASEROW_CONFIG = {
   tableId: '787',
   targetTableId: '790',
   baseUrl: 'https://baserow.app-inventor.org',
-  databaseId: '59' // Your database ID
+  databaseId: '59', // Your database ID
+  // JWT Authentication credentials
+  username: 'hgu@xiller.com',
+  password: 'fEifpCnv5HpKVVv'
+};
+
+// Function to get a fresh JWT token
+const getJWTToken = async (): Promise<string> => {
+  try {
+    const response = await fetch(`${BASEROW_CONFIG.baseUrl}/api/user/token-auth/`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        username: BASEROW_CONFIG.username,
+        password: BASEROW_CONFIG.password,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to authenticate');
+    }
+
+    const data = await response.json();
+    console.log('Successfully obtained JWT token');
+    return data.token;
+  } catch (error) {
+    console.error('Error getting JWT token:', error);
+    throw new Error('Authentication failed');
+  }
 };
 
 export const uploadToBaserow = async (data: UploadData): Promise<void> => {
@@ -187,10 +217,13 @@ const findExistingRecord = async (vorname: string, nachname: string, email: stri
   }
 };
 
-// Create a new table using JWT token with correct endpoint
+// Create a new table using fresh JWT token
 export const createNewTable = async (tableName: string, columns: string[]): Promise<string> => {
   try {
-    // Create table structure - FIXED: Use correct endpoint
+    // Get fresh JWT token
+    const jwtToken = await getJWTToken();
+    
+    // Create table structure
     const tableData = {
       name: tableName
     };
@@ -198,7 +231,7 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
     const tableResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/tables/database/${BASEROW_CONFIG.databaseId}/`, {
       method: 'POST',
       headers: {
-        'Authorization': `JWT ${BASEROW_CONFIG.jwtToken}`,
+        'Authorization': `JWT ${jwtToken}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(tableData),
@@ -215,7 +248,7 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
 
     // Add columns to the table
     for (const columnName of columns) {
-      await createTableColumn(tableResult.id, columnName);
+      await createTableColumn(tableResult.id, columnName, jwtToken);
     }
 
     return tableResult.id.toString();
@@ -226,7 +259,7 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
 };
 
 // Create a column in the table
-const createTableColumn = async (tableId: string, columnName: string) => {
+const createTableColumn = async (tableId: string, columnName: string, jwtToken: string) => {
   try {
     const columnData = {
       name: columnName,
@@ -236,7 +269,7 @@ const createTableColumn = async (tableId: string, columnName: string) => {
     const columnResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
       method: 'POST',
       headers: {
-        'Authorization': `JWT ${BASEROW_CONFIG.jwtToken}`,
+        'Authorization': `JWT ${jwtToken}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(columnData),
@@ -250,13 +283,15 @@ const createTableColumn = async (tableId: string, columnName: string) => {
   }
 };
 
-// Delete a table
+// Delete a table using fresh JWT token
 const deleteTable = async (tableId: string) => {
   try {
+    const jwtToken = await getJWTToken();
+    
     const response = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/tables/${tableId}/`, {
       method: 'DELETE',
       headers: {
-        'Authorization': `JWT ${BASEROW_CONFIG.jwtToken}`,
+        'Authorization': `JWT ${jwtToken}`,
       },
     });
 
@@ -388,6 +423,9 @@ export const processImportData = async (mappings: Record<string, string>): Promi
     
     let created = 0;
 
+    // Get fresh JWT token for record creation
+    const jwtToken = await getJWTToken();
+
     // Process each data row (skip header)
     for (let i = 1; i < lines.length; i++) {
       const values = lines[i].split(',').map(v => v.trim().replace(/"/g, ''));
@@ -403,7 +441,7 @@ export const processImportData = async (mappings: Record<string, string>): Promi
 
       // Only process if we have some mapped data
       if (Object.keys(mappedData).length > 0) {
-        await createRecordInNewTable(tableId, mappedData);
+        await createRecordInNewTable(tableId, mappedData, jwtToken);
         created++;
       }
     }
@@ -416,12 +454,12 @@ export const processImportData = async (mappings: Record<string, string>): Promi
 };
 
 // Create record in the new table
-const createRecordInNewTable = async (tableId: string, recordData: any) => {
+const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken: string) => {
   try {
     const createResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${tableId}/`, {
       method: 'POST',
       headers: {
-        'Authorization': `JWT ${BASEROW_CONFIG.jwtToken}`,
+        'Authorization': `JWT ${jwtToken}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(recordData),
