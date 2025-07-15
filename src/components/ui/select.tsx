@@ -1,4 +1,5 @@
 
+
 import * as React from "react"
 import * as SelectPrimitive from "@radix-ui/react-select"
 import { Check, ChevronDown, ChevronUp } from "lucide-react"
@@ -84,6 +85,13 @@ const SelectContent = React.forwardRef<
         // Prevent auto-focus on close to avoid interference with filter input
         e.preventDefault();
       }}
+      onPointerDownOutside={(e) => {
+        // Prevent closing when clicking on the filter input
+        const target = e.target as Element;
+        if (target?.closest('input[type="text"]')) {
+          e.preventDefault();
+        }
+      }}
       {...props}
     >
       <SelectScrollUpButton />
@@ -161,3 +169,4 @@ export {
   SelectScrollUpButton,
   SelectScrollDownButton,
 }
+

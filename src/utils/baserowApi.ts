@@ -13,6 +13,7 @@ const BASEROW_CONFIG = {
   tableId: '787',
   targetTableId: '790',
   baseUrl: 'https://baserow.app-inventor.org',
+  databaseId: '59' // Your database ID
 };
 
 export const uploadToBaserow = async (data: UploadData): Promise<void> => {
@@ -186,16 +187,15 @@ const findExistingRecord = async (vorname: string, nachname: string, email: stri
   }
 };
 
-// Create a new table using JWT token
+// Create a new table using JWT token with correct endpoint
 export const createNewTable = async (tableName: string, columns: string[]): Promise<string> => {
   try {
-    // Create table structure
+    // Create table structure - FIXED: Use correct endpoint
     const tableData = {
-      name: tableName,
-      database_id: 59 // Your database ID
+      name: tableName
     };
 
-    const tableResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/tables/`, {
+    const tableResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/tables/database/${BASEROW_CONFIG.databaseId}/`, {
       method: 'POST',
       headers: {
         'Authorization': `JWT ${BASEROW_CONFIG.jwtToken}`,
