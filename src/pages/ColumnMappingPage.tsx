@@ -5,7 +5,7 @@ import { useToast } from '@/hooks/use-toast';
 import ColumnMapping from '@/components/ColumnMapping';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { AlertCircle, CheckCircle, FileSpreadsheet } from 'lucide-react';
+import { AlertCircle, CheckCircle, FileSpreadsheet, ExternalLink } from 'lucide-react';
 import { processImportData } from '@/utils/baserowApi';
 
 interface UploadedFileInfo {
@@ -75,19 +75,21 @@ const ColumnMappingPage = () => {
       console.log('Column mappings completed:', mappings);
       console.log('File info:', uploadedFileInfo);
       
-      // Process the actual file data with mappings
+      // Process the actual file data with mappings and create new table
       const results = await processImportData(mappings);
       
       setImportResults({
         total: results.total,
         updated: results.updated,
         created: results.created,
+        tableId: results.tableId,
+        tableName: results.tableName,
         mappings,
       });
       
       toast({
         title: "Import erfolgreich",
-        description: `${results.total} Datensätze verarbeitet. ${results.created} neue Einträge, ${results.updated} aktualisiert.`,
+        description: `Neue Tabelle "${results.tableName}" erstellt mit ${results.total} Datensätzen.`,
       });
 
     } catch (error) {
@@ -146,27 +148,31 @@ const ColumnMappingPage = () => {
         <Card className="w-full max-w-2xl">
           <CardContent className="p-8 text-center">
             <CheckCircle className="h-16 w-16 text-green-500 mx-auto mb-6" />
-            <h2 className="text-2xl font-bold text-gray-800 mb-4">Import erfolgreich abgeschlossen!</h2>
+            <h2 className="text-2xl font-bold text-gray-800 mb-4">Neue Tabelle erfolgreich erstellt!</h2>
             
-            <div className="grid grid-cols-3 gap-4 mb-8">
-              <div className="bg-blue-50 p-4 rounded-lg">
-                <div className="text-2xl font-bold text-blue-600">{importResults.total}</div>
-                <div className="text-sm text-gray-600">Gesamt verarbeitet</div>
-              </div>
+            <div className="bg-blue-50 p-4 rounded-lg mb-6">
+              <h3 className="font-semibold text-blue-800 mb-2">Tabelle Details:</h3>
+              <p className="text-blue-700 font-mono text-sm">{importResults.tableName}</p>
+              <p className="text-blue-600 text-sm">Tabelle-ID: {importResults.tableId}</p>
+            </div>
+            
+            <div className="grid grid-cols-2 gap-4 mb-8">
               <div className="bg-green-50 p-4 rounded-lg">
-                <div className="text-2xl font-bold text-green-600">{importResults.created}</div>
-                <div className="text-sm text-gray-600">Neue Einträge</div>
+                <div className="text-2xl font-bold text-green-600">{importResults.total}</div>
+                <div className="text-sm text-gray-600">Datensätze importiert</div>
               </div>
-              <div className="bg-orange-50 p-4 rounded-lg">
-                <div className="text-2xl font-bold text-orange-600">{importResults.updated}</div>
-                <div className="text-sm text-gray-600">Aktualisiert</div>
+              <div className="bg-blue-50 p-4 rounded-lg">
+                <div className="text-2xl font-bold text-blue-600">{Object.keys(importResults.mappings).length}</div>
+                <div className="text-sm text-gray-600">Spalten zugeordnet</div>
               </div>
             </div>
 
             <div className="text-left bg-gray-50 p-4 rounded-lg mb-6">
               <h3 className="font-semibold text-gray-800 mb-2">Verwendete Spalten-Zuordnungen:</h3>
               <div className="space-y-1">
-                {Object.entries(importResults.mappings).map(([userCol, targetCol]: [string, string]) => (
+                {Object.entries(importResults.mappings)
+                  .filter(([, targetCol]) => targetCol !== 'ignore')
+                  .map(([userCol, targetCol]: [string, string]) => (
                   <div key={userCol} className="flex items-center gap-2 text-sm">
                     <span className="font-mono bg-white px-2 py-1 rounded">{userCol}</span>
                     <span>→</span>
@@ -177,6 +183,14 @@ const ColumnMappingPage = () => {
             </div>
             
             <div className="flex gap-4 justify-center">
+              <Button 
+                onClick={() => window.open(`https://baserow.app-inventor.org/database/59/table/${importResults.tableId}`, '_blank')}
+                variant="outline"
+                className="flex items-center gap-2"
+              >
+                <ExternalLink className="h-4 w-4" />
+                Tabelle in Baserow öffnen
+              </Button>
               <Button onClick={handleStartOver} className="bg-gradient-to-r from-blue-600 to-purple-600">
                 <FileSpreadsheet className="h-4 w-4 mr-2" />
                 Neue Datei hochladen

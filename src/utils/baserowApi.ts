@@ -1,4 +1,3 @@
-
 interface UploadData {
   vorname: string;
   nachname: string;
@@ -22,8 +21,13 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
     const existingRecord = await findExistingRecord(data.vorname, data.nachname, data.email, data.company);
     
     if (existingRecord) {
-      // Update existing record instead of creating new one
+      // Update existing record and delete old table if exists
       console.log('Found existing record, updating instead of creating new one');
+      
+      // Delete old table if it exists
+      if (existingRecord.CreatedTableId) {
+        await deleteTable(existingRecord.CreatedTableId);
+      }
       
       const updateResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.tableId}/${existingRecord.id}/?user_field_names=true`, {
         method: 'PATCH',
@@ -37,6 +41,7 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
           EMAIL: data.email,
           Company: data.company,
           Dateiname: data.file.name,
+          CreatedTableId: null, // Will be updated after new table creation
         }),
       });
 
@@ -47,13 +52,14 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
       const updateResult = await updateResponse.json();
       console.log('Successfully updated existing record:', updateResult);
       
-      // Store file info for mapping page - read file content directly
-      const fileContent = await data.file.text();
+      // Store file info for mapping page - process file in chunks for large files
+      const fileContent = await processFileInChunks(data.file);
       sessionStorage.setItem('uploadedFileInfo', JSON.stringify({
         file: { url: existingRecord.Datei?.[0]?.url || '' },
         userData: data,
         fileName: data.file.name,
-        fileContent: fileContent // Store the actual file content
+        fileContent: fileContent,
+        recordId: existingRecord.id
       }));
       
       return;
@@ -80,16 +86,8 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
     const fileUploadResult = await fileUploadResponse.json();
     console.log('File uploaded successfully:', fileUploadResult);
     
-    // Read file content and store it
-    const fileContent = await data.file.text();
-    
-    // Store file info in session for the mapping page
-    sessionStorage.setItem('uploadedFileInfo', JSON.stringify({
-      file: fileUploadResult,
-      userData: data,
-      fileName: data.file.name,
-      fileContent: fileContent // Store the actual file content
-    }));
+    // Process file in chunks for large files
+    const fileContent = await processFileInChunks(data.file);
     
     // Then, create a row in the table with the form data and file reference
     const rowData = {
@@ -99,6 +97,7 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
       Company: data.company,
       Datei: [fileUploadResult],
       Dateiname: data.file.name,
+      CreatedTableId: null, // Will be updated after table creation
     };
 
     const rowResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.tableId}/?user_field_names=true`, {
@@ -119,11 +118,44 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
 
     const rowResult = await rowResponse.json();
     console.log('Successfully created row:', rowResult);
+    
+    // Store file info in session for the mapping page
+    sessionStorage.setItem('uploadedFileInfo', JSON.stringify({
+      file: fileUploadResult,
+      userData: data,
+      fileName: data.file.name,
+      fileContent: fileContent,
+      recordId: rowResult.id
+    }));
 
   } catch (error) {
     console.error('Baserow upload error:', error);
     throw error;
   }
+};
+
+// Process large files in chunks to avoid memory issues
+const processFileInChunks = async (file: File): Promise<string> => {
+  const chunkSize = 1024 * 1024; // 1MB chunks
+  let content = '';
+  
+  for (let start = 0; start < file.size; start += chunkSize) {
+    const chunk = file.slice(start, start + chunkSize);
+    const chunkText = await chunk.text();
+    content += chunkText;
+    
+    // For very large files, we might want to limit the content we store
+    // Keep only first 100 lines for header parsing
+    if (start === 0) {
+      const lines = content.split('\n');
+      if (lines.length > 100) {
+        content = lines.slice(0, 100).join('\n');
+        break;
+      }
+    }
+  }
+  
+  return content;
 };
 
 // Helper function to find existing records
@@ -151,6 +183,110 @@ const findExistingRecord = async (vorname: string, nachname: string, email: stri
   } catch (error) {
     console.error('Error checking for existing records:', error);
     return null;
+  }
+};
+
+// Create a new table using JWT token
+export const createNewTable = async (tableName: string, columns: string[]): Promise<string> => {
+  try {
+    // Create table structure
+    const tableData = {
+      name: tableName,
+      database_id: 59 // Your database ID
+    };
+
+    const tableResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/tables/`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `JWT ${BASEROW_CONFIG.jwtToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(tableData),
+    });
+
+    if (!tableResponse.ok) {
+      const errorText = await tableResponse.text();
+      console.error('Table creation failed:', errorText);
+      throw new Error('Tabelle konnte nicht erstellt werden');
+    }
+
+    const tableResult = await tableResponse.json();
+    console.log('Table created:', tableResult);
+
+    // Add columns to the table
+    for (const columnName of columns) {
+      await createTableColumn(tableResult.id, columnName);
+    }
+
+    return tableResult.id.toString();
+  } catch (error) {
+    console.error('Error creating table:', error);
+    throw error;
+  }
+};
+
+// Create a column in the table
+const createTableColumn = async (tableId: string, columnName: string) => {
+  try {
+    const columnData = {
+      name: columnName,
+      type: 'text'
+    };
+
+    const columnResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `JWT ${BASEROW_CONFIG.jwtToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(columnData),
+    });
+
+    if (!columnResponse.ok) {
+      console.error('Column creation failed for:', columnName);
+    }
+  } catch (error) {
+    console.error('Error creating column:', columnName, error);
+  }
+};
+
+// Delete a table
+const deleteTable = async (tableId: string) => {
+  try {
+    const response = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/tables/${tableId}/`, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': `JWT ${BASEROW_CONFIG.jwtToken}`,
+      },
+    });
+
+    if (response.ok) {
+      console.log('Old table deleted successfully:', tableId);
+    }
+  } catch (error) {
+    console.error('Error deleting table:', error);
+  }
+};
+
+// Update record with created table ID
+const updateRecordWithTableId = async (recordId: number, tableId: string) => {
+  try {
+    const response = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.tableId}/${recordId}/?user_field_names=true`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        CreatedTableId: tableId,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error('Failed to update record with table ID');
+    }
+  } catch (error) {
+    console.error('Error updating record with table ID:', error);
   }
 };
 
@@ -220,8 +356,8 @@ export const parseFileHeaders = async (file: File): Promise<string[]> => {
   }
 };
 
-// Process the mapped data and create records in target table
-export const processImportData = async (mappings: Record<string, string>): Promise<{ total: number, created: number, updated: number }> => {
+// Process the mapped data and create records in new table
+export const processImportData = async (mappings: Record<string, string>): Promise<{ total: number, created: number, updated: number, tableId: string, tableName: string }> => {
   try {
     // Get file content from stored info
     const uploadedFileInfo = sessionStorage.getItem('uploadedFileInfo');
@@ -231,6 +367,7 @@ export const processImportData = async (mappings: Record<string, string>): Promi
 
     const fileInfo = JSON.parse(uploadedFileInfo);
     const content = fileInfo.fileContent;
+    const userData = fileInfo.userData;
 
     if (!content) {
       throw new Error('No file content found');
@@ -239,8 +376,17 @@ export const processImportData = async (mappings: Record<string, string>): Promi
     const lines = content.split('\n').filter(line => line.trim().length > 0);
     const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
     
+    // Get unique mapped columns
+    const mappedColumns = [...new Set(Object.values(mappings).filter(col => col !== 'ignore'))];
+    
+    // Create new table
+    const tableName = `${userData.company}_${userData.vorname}_${userData.nachname}_${new Date().toISOString().slice(0, 10)}`;
+    const tableId = await createNewTable(tableName, mappedColumns);
+    
+    // Update the record in table 787 with the new table ID
+    await updateRecordWithTableId(fileInfo.recordId, tableId);
+    
     let created = 0;
-    let updated = 0;
 
     // Process each data row (skip header)
     for (let i = 1; i < lines.length; i++) {
@@ -250,110 +396,43 @@ export const processImportData = async (mappings: Record<string, string>): Promi
       const mappedData: any = {};
       
       headers.forEach((header, index) => {
-        if (mappings[header] && values[index]) {
+        if (mappings[header] && mappings[header] !== 'ignore' && values[index]) {
           mappedData[mappings[header]] = values[index];
         }
       });
 
       // Only process if we have some mapped data
       if (Object.keys(mappedData).length > 0) {
-        const result = await upsertRecord(mappedData);
-        if (result.action === 'created') {
-          created++;
-        } else if (result.action === 'updated') {
-          updated++;
-        }
+        await createRecordInNewTable(tableId, mappedData);
+        created++;
       }
     }
 
-    return { total: created + updated, created, updated };
+    return { total: created, created, updated: 0, tableId, tableName };
   } catch (error) {
     console.error('Error processing import data:', error);
     throw error;
   }
 };
 
-// Check if record exists and update or create
-export const upsertRecord = async (recordData: any) => {
+// Create record in the new table
+const createRecordInNewTable = async (tableId: string, recordData: any) => {
   try {
-    // First, search for existing record based on key fields
-    const searchFields = ['Vorname', 'Nachname', 'EMAIL', 'Company'];
-    const searchValues = searchFields.map(field => recordData[field]).filter(Boolean);
-    
-    if (searchValues.length === 0) {
-      // If no key fields, just create
-      const createResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.targetTableId}/?user_field_names=true`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(recordData),
-      });
-      
-      if (!createResponse.ok) {
-        throw new Error('Failed to create new record');
-      }
-      
-      return { action: 'created', record: await createResponse.json() };
-    }
-
-    // Search for existing records
-    const searchResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.targetTableId}/?user_field_names=true`, {
-      headers: {
-        'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
-      },
-    });
-    
-    if (searchResponse.ok) {
-      const searchResults = await searchResponse.json();
-      
-      // Check if exact match exists
-      const exactMatch = searchResults.results?.find((row: any) => 
-        row.Vorname === recordData.Vorname &&
-        row.Nachname === recordData.Nachname &&
-        row.EMAIL === recordData.EMAIL &&
-        row.Company === recordData.Company
-      );
-      
-      if (exactMatch) {
-        // Update existing record
-        const updateResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.targetTableId}/${exactMatch.id}/?user_field_names=true`, {
-          method: 'PATCH',
-          headers: {
-            'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(recordData),
-        });
-        
-        if (!updateResponse.ok) {
-          throw new Error('Failed to update existing record');
-        }
-        
-        return { action: 'updated', record: await updateResponse.json() };
-      }
-    }
-    
-    // Create new record if no match found
-    const createResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.targetTableId}/?user_field_names=true`, {
+    const createResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${tableId}/`, {
       method: 'POST',
       headers: {
-        'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
+        'Authorization': `JWT ${BASEROW_CONFIG.jwtToken}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(recordData),
     });
     
     if (!createResponse.ok) {
-      throw new Error('Failed to create new record');
+      console.error('Failed to create record in new table');
     }
     
-    return { action: 'created', record: await createResponse.json() };
-    
   } catch (error) {
-    console.error('Error in upsertRecord:', error);
-    throw error;
+    console.error('Error creating record in new table:', error);
   }
 };
 
