@@ -1,5 +1,4 @@
 
-
 import * as React from "react"
 import * as SelectPrimitive from "@radix-ui/react-select"
 import { Check, ChevronDown, ChevronUp } from "lucide-react"
@@ -92,6 +91,13 @@ const SelectContent = React.forwardRef<
           e.preventDefault();
         }
       }}
+      onEscapeKeyDown={(e) => {
+        // Prevent closing when pressing escape in filter input
+        const target = e.target as Element;
+        if (target?.closest('input[type="text"]')) {
+          e.preventDefault();
+        }
+      }}
       {...props}
     >
       <SelectScrollUpButton />
@@ -169,4 +175,3 @@ export {
   SelectScrollUpButton,
   SelectScrollDownButton,
 }
-

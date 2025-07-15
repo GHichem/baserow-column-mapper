@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -20,7 +21,7 @@ interface ColumnMapping {
   isMatched: boolean;
   similarity: number;
   isIgnored: boolean;
-  filter?: string; // <-- add this line
+  filter?: string;
 }
 
 const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingComplete, onBack }) => {
@@ -300,14 +301,22 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
                             </SelectTrigger>
                             <SelectContent>
                               {/* Filter input */}
-                              <div className="p-2">
+                              <div className="p-2 border-b">
                                 <input
                                   type="text"
                                   placeholder="Suchen..."
                                   value={mapping.filter || ""}
-                                  onChange={e => handleFilterChange(userColumn, e.target.value)}
-                                  className="w-full border rounded px-2 py-1 mb-2 text-sm"
-                                  autoFocus
+                                  onChange={(e) => {
+                                    e.stopPropagation();
+                                    handleFilterChange(userColumn, e.target.value);
+                                  }}
+                                  onKeyDown={(e) => {
+                                    e.stopPropagation();
+                                  }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                  }}
+                                  className="w-full border rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 />
                               </div>
                               <SelectItem value="ignore">
