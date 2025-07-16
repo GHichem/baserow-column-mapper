@@ -30,7 +30,7 @@ const Index = () => {
              © 2025 XiLLeR GmbH - <a href="https://www.xiller.de/Impressum/" className="hover:text-white transition-colors">Impressum</a> | <a href="https://www.xiller.de/datenschutzerklaerung/" className="hover:text-white transition-colors">Datenschutzerklärung</a>
           </p>
           <p className="text-xs text-gray-400 mt-1">
-            Konzeption, Design, Programmierung: Beste Medien Werbe Agentur
+            <a href="https://www.beste-medien-werbe-agentur.de/Angebot/Consulting.html" className="hover:text-white transition-colors">Konzeption, Design, Programmierung: Beste Medien Werbe Agentur</a>
           </p>
         </div>
       </div>

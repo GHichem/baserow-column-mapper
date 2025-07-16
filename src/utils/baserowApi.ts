@@ -248,7 +248,7 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
     console.log('Table created successfully:', tableResult);
 
     // Wait for table to be fully created
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, 100));
 
     // Handle the primary "Name" field and create other columns
     await setupTableColumns(tableResult.id, columns, jwtToken);
@@ -306,7 +306,7 @@ const setupTableColumns = async (tableId: string, columns: string[], jwtToken: s
       }
       
       // Wait after rename
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise(resolve => setTimeout(resolve, 50));
     }
 
     // Delete any other default fields (but not the primary one)
@@ -328,7 +328,7 @@ const setupTableColumns = async (tableId: string, columns: string[], jwtToken: s
           console.log('Could not delete field (expected for some default fields):', field.name, errorText);
         }
         
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
 
@@ -339,12 +339,11 @@ const setupTableColumns = async (tableId: string, columns: string[], jwtToken: s
       
       await createTableColumn(tableId, columnName, jwtToken);
       // Wait between column creations
-      await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
     // Extra wait to ensure all field operations are complete
     console.log('Waiting extra time for all field operations to complete...');
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await new Promise(resolve => setTimeout(resolve, 30));
     
   } catch (error) {
     console.error('Error setting up table columns:', error);
@@ -515,7 +514,12 @@ export const processImportData = async (mappings: Record<string, string>): Promi
     
     console.log('Processing file content with length:', content.length);
     
-    const lines = content.split('\n').filter(line => line.trim().length > 0);
+    const lines = content
+  .split(/\r?\n/) // handle both \n and \r\n
+  .map(line => line.trim())
+  .filter(line => line && !/^["',\s]*$/.test(line));
+
+
     console.log('Found', lines.length, 'lines in file');
     
     if (lines.length < 2) {
@@ -540,6 +544,23 @@ export const processImportData = async (mappings: Record<string, string>): Promi
     const tableId = await createNewTable(tableName, mappedColumns);
     console.log('Table created with ID:', tableId);
     
+    // 🧹 Clean up any default rows that Baserow might have added automatically
+const cleanupToken = await getJWTToken();
+const defaultRows = await verifyRecordsCreated(tableId);
+
+if (defaultRows.length > 0) {
+  console.warn(`🚨 Found ${defaultRows.length} default rows – cleaning up...`);
+  for (const row of defaultRows) {
+    await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${tableId}/${row.id}/`, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': `JWT ${cleanupToken}`
+      }
+    });
+  }
+  console.log(`✅ Deleted ${defaultRows.length} default rows from new table`);
+}
+
     // Update the record in table 787 with the new table ID
     await updateRecordWithTableId(fileInfo.recordId, tableId);
     
@@ -557,39 +578,54 @@ export const processImportData = async (mappings: Record<string, string>): Promi
     
     const recordsToCreate = [];
     
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (!line) continue;
-      
-      console.log(`Processing row ${i}:`, line.substring(0, 100) + '...');
-      
-      // Parse CSV line properly (handle quoted values)
-      const values = parseCSVLine(line);
-      console.log(`Parsed values for row ${i}:`, values);
-      
-      // Map the values according to the column mappings using field IDs
-      const mappedData: any = {};
-      
-      headers.forEach((header, index) => {
-        if (mappings[header] && mappings[header] !== 'ignore' && values[index] !== undefined) {
-          const targetColumn = mappings[header];
-          const fieldId = fieldMappings[targetColumn];
-          const value = values[index] || '';
-          
-          if (fieldId) {
-            mappedData[`field_${fieldId}`] = value;
-            console.log(`Mapping: ${header} -> ${targetColumn} (field_${fieldId}) = "${value}"`);
-          }
-        }
-      });
+for (let i = 1; i < lines.length; i++) {
+  const line = lines[i].trim();
 
-      console.log(`Mapped data for row ${i}:`, mappedData);
+  // Skip if the entire line is empty or contains only commas/quotes/spaces
+  if (!line || /^["',\s]*$/.test(line)) {
+    console.warn(`⚠️ Skipping row ${i}: line is empty or contains only separators`);
+    continue;
+  }
 
-      // Only process if we have some mapped data
-      if (Object.keys(mappedData).length > 0) {
-        recordsToCreate.push(mappedData);
+  console.log(`Processing row ${i}:`, line.substring(0, 100) + '...');
+
+  // Parse the line into values (handles quotes properly)
+  const values = parseCSVLine(line);
+  console.log(`Parsed values for row ${i}:`, values);
+
+  // Skip if all values are empty
+  if (values.every(v => !v || (typeof v === 'string' && v.trim() === ''))) {
+    console.warn(`⚠️ Skipping row ${i}: all values are empty`);
+    continue;
+  }
+
+  // Map values to Baserow fields
+  const mappedData: any = {};
+
+  headers.forEach((header, index) => {
+    const cleanHeader = header.trim().replace(/"/g, '');
+    const targetColumn = mappings[cleanHeader];
+
+    if (targetColumn && targetColumn !== 'ignore' && values[index] !== undefined) {
+      const fieldId = fieldMappings[targetColumn];
+      const value = typeof values[index] === 'string' ? values[index].trim() : values[index];
+
+      if (fieldId && value !== '') {
+        mappedData[`field_${fieldId}`] = value;
       }
     }
+  });
+
+  // Skip if mappedData is incomplete
+  if (Object.keys(mappedData).length !== mappedColumns.length) {
+    console.warn(`⚠️ Skipping row ${i}: Incomplete mapping`, mappedData);
+    continue;
+  }
+
+  console.log(`✅ Accepted row ${i}:`, mappedData);
+  recordsToCreate.push(mappedData);
+}
+
 
     // Create records in batches
     console.log(`Creating ${recordsToCreate.length} records in table ${tableId}`);
@@ -600,7 +636,7 @@ export const processImportData = async (mappings: Record<string, string>): Promi
       console.log(`Successfully created record ${created}`);
       
       // Small delay between record creations
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await new Promise(resolve => setTimeout(resolve, 30));
     }
 
     // Verify records were actually created
@@ -666,25 +702,14 @@ const getFieldMappings = async (tableId: string, columnNames: string[]): Promise
 
 // Helper function to properly parse CSV lines
 const parseCSVLine = (line: string): string[] => {
-  const result: string[] = [];
-  let current = '';
-  let inQuotes = false;
-  
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-    
-    if (char === '"') {
-      inQuotes = !inQuotes;
-    } else if (char === ',' && !inQuotes) {
-      result.push(current.trim().replace(/^"(.*)"$/, '$1'));
-      current = '';
-    } else {
-      current += char;
-    }
-  }
-  
-  result.push(current.trim().replace(/^"(.*)"$/, '$1'));
-  return result;
+  const regex = /(".*?"|[^",\s]+)(?=\s*,|\s*$)/g;
+  const matches = [...line.matchAll(regex)].map(m => {
+    const value = m[0].trim();
+    return value.startsWith('"') && value.endsWith('"')
+      ? value.slice(1, -1)
+      : value;
+  });
+  return matches;
 };
 
 // Create record in the new table
