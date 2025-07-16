@@ -263,7 +263,7 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
 // Setup table columns - rename primary field and create others
 const setupTableColumns = async (tableId: string, columns: string[], jwtToken: string) => {
   try {
-    console.log('Setting up table columns for table:', tableId);
+    console.log('Setting up table columns for table:', tableId, 'with columns:', columns);
     
     // Get current table fields
     const fieldsResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
@@ -279,14 +279,14 @@ const setupTableColumns = async (tableId: string, columns: string[], jwtToken: s
     const fields = await fieldsResponse.json();
     console.log('Current table fields:', fields);
     
-    // Find the primary "Name" field
-    const nameField = fields.find((field: any) => field.primary === true || field.name === 'Name');
+    // Find the primary field (cannot be deleted, must exist)
+    const primaryField = fields.find((field: any) => field.primary === true);
     
-    if (nameField && columns.length > 0) {
+    if (primaryField && columns.length > 0) {
       // Rename the primary field to the first CSV column
-      console.log(`Renaming primary field ${nameField.name} to ${columns[0]}`);
+      console.log(`Renaming primary field ${primaryField.name} to ${columns[0]}`);
       
-      const renameResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/${nameField.id}/`, {
+      const renameResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/${primaryField.id}/`, {
         method: 'PATCH',
         headers: {
           'Authorization': `JWT ${jwtToken}`,
@@ -302,6 +302,7 @@ const setupTableColumns = async (tableId: string, columns: string[], jwtToken: s
       } else {
         const errorText = await renameResponse.text();
         console.error('Failed to rename primary field:', errorText);
+        throw new Error(`Failed to rename primary field: ${errorText}`);
       }
       
       // Wait after rename
@@ -310,7 +311,7 @@ const setupTableColumns = async (tableId: string, columns: string[], jwtToken: s
 
     // Delete any other default fields (but not the primary one)
     for (const field of fields) {
-      if (field.id !== nameField?.id && (field.name === 'Notes' || field.name === 'Active')) {
+      if (field.id !== primaryField?.id && (field.name === 'Notes' || field.name === 'Active')) {
         console.log(`Deleting default field: ${field.name}`);
         
         const deleteResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/${field.id}/`, {
@@ -322,6 +323,9 @@ const setupTableColumns = async (tableId: string, columns: string[], jwtToken: s
         
         if (deleteResponse.ok) {
           console.log('Successfully deleted field:', field.name);
+        } else {
+          const errorText = await deleteResponse.text();
+          console.log('Could not delete field (expected for some default fields):', field.name, errorText);
         }
         
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -335,12 +339,12 @@ const setupTableColumns = async (tableId: string, columns: string[], jwtToken: s
       
       await createTableColumn(tableId, columnName, jwtToken);
       // Wait between column creations
-      await new Promise(resolve => setTimeout(resolve, 800));
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
     // Extra wait to ensure all field operations are complete
-    console.log('Waiting for all field operations to complete...');
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    console.log('Waiting extra time for all field operations to complete...');
+    await new Promise(resolve => setTimeout(resolve, 3000));
     
   } catch (error) {
     console.error('Error setting up table columns:', error);
@@ -599,7 +603,13 @@ export const processImportData = async (mappings: Record<string, string>): Promi
       await new Promise(resolve => setTimeout(resolve, 200));
     }
 
+    // Verify records were actually created
+    console.log('Verifying records were created...');
+    const verificationRows = await verifyRecordsCreated(tableId);
+    
     console.log(`Import completed. Created ${created} records in table ${tableId}`);
+    console.log(`Verification: Found ${verificationRows.length} rows in table`);
+    
     return { total: created, created, updated: 0, tableId, tableName };
   } catch (error) {
     console.error('Error processing import data:', error);
@@ -610,6 +620,7 @@ export const processImportData = async (mappings: Record<string, string>): Promi
 // Get field mappings (column name to field ID) after table setup
 const getFieldMappings = async (tableId: string, columnNames: string[]): Promise<Record<string, number>> => {
   try {
+    console.log('Fetching field mappings for table:', tableId, 'columns:', columnNames);
     const jwtToken = await getJWTToken();
     
     const response = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
@@ -619,11 +630,13 @@ const getFieldMappings = async (tableId: string, columnNames: string[]): Promise
     });
 
     if (!response.ok) {
-      throw new Error('Failed to fetch updated field mappings');
+      const errorText = await response.text();
+      console.error('Failed to fetch field mappings:', errorText);
+      throw new Error(`Failed to fetch updated field mappings: ${errorText}`);
     }
 
     const fields = await response.json();
-    console.log('Updated table fields:', fields);
+    console.log('Current table fields for mapping:', fields);
     
     const mappings: Record<string, number> = {};
     
@@ -631,8 +644,18 @@ const getFieldMappings = async (tableId: string, columnNames: string[]): Promise
     fields.forEach((field: any) => {
       if (columnNames.includes(field.name)) {
         mappings[field.name] = field.id;
+        console.log(`Mapped column "${field.name}" to field ID ${field.id}`);
       }
     });
+    
+    console.log('Final field mappings:', mappings);
+    
+    // Verify we have mappings for all columns
+    const missingMappings = columnNames.filter(col => !mappings[col]);
+    if (missingMappings.length > 0) {
+      console.error('Missing field mappings for columns:', missingMappings);
+      throw new Error(`Missing field mappings for columns: ${missingMappings.join(', ')}`);
+    }
     
     return mappings;
   } catch (error) {
@@ -682,6 +705,7 @@ const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken
       const errorText = await createResponse.text();
       console.error('Failed to create record in new table:', errorText);
       console.error('Record data was:', recordData);
+      console.error('Response status:', createResponse.status);
       throw new Error(`Failed to create record: ${errorText}`);
     } else {
       const result = await createResponse.json();
@@ -691,6 +715,32 @@ const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken
     
   } catch (error) {
     console.error('Error creating record in new table:', error);
+    throw error;
+  }
+};
+
+// Helper function to verify records were created
+export const verifyRecordsCreated = async (tableId: string): Promise<any[]> => {
+  try {
+    const jwtToken = await getJWTToken();
+    
+    const response = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${tableId}/`, {
+      headers: {
+        'Authorization': `JWT ${jwtToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Failed to fetch table rows:', errorText);
+      throw new Error(`Failed to fetch table rows: ${errorText}`);
+    }
+
+    const data = await response.json();
+    console.log(`Found ${data.results?.length || 0} rows in table ${tableId}:`, data.results);
+    return data.results || [];
+  } catch (error) {
+    console.error('Error verifying records:', error);
     throw error;
   }
 };
