@@ -1,4 +1,3 @@
-
 interface UploadData {
   vorname: string;
   nachname: string;
@@ -247,6 +246,9 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
     const tableResult = await tableResponse.json();
     console.log('Table created:', tableResult);
 
+    // Delete the default "Name" column that gets created automatically
+    await deleteDefaultColumns(tableResult.id, jwtToken);
+
     // Add columns to the table
     for (const columnName of columns) {
       await createTableColumn(tableResult.id, columnName, jwtToken);
@@ -256,6 +258,38 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
   } catch (error) {
     console.error('Error creating table:', error);
     throw error;
+  }
+};
+
+// Delete default columns from newly created table
+const deleteDefaultColumns = async (tableId: string, jwtToken: string) => {
+  try {
+    // Get table fields
+    const fieldsResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
+      headers: {
+        'Authorization': `JWT ${jwtToken}`,
+      },
+    });
+
+    if (fieldsResponse.ok) {
+      const fields = await fieldsResponse.json();
+      
+      // Delete default fields (usually "Name" field with id 1)
+      for (const field of fields) {
+        if (field.name === 'Name' || field.primary) {
+          await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/${field.id}/`, {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `JWT ${jwtToken}`,
+            },
+          });
+          console.log('Deleted default column:', field.name);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error deleting default columns:', error);
+    // Don't throw here as it's not critical
   }
 };
 
@@ -278,6 +312,8 @@ const createTableColumn = async (tableId: string, columnName: string, jwtToken: 
 
     if (!columnResponse.ok) {
       console.error('Column creation failed for:', columnName);
+    } else {
+      console.log('Created column:', columnName);
     }
   } catch (error) {
     console.error('Error creating column:', columnName, error);
@@ -457,6 +493,8 @@ export const processImportData = async (mappings: Record<string, string>): Promi
 // Create record in the new table
 const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken: string) => {
   try {
+    console.log('Creating record in table:', tableId, 'with data:', recordData);
+    
     const createResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${tableId}/`, {
       method: 'POST',
       headers: {
@@ -467,7 +505,11 @@ const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken
     });
     
     if (!createResponse.ok) {
-      console.error('Failed to create record in new table');
+      const errorText = await createResponse.text();
+      console.error('Failed to create record in new table:', errorText);
+    } else {
+      const result = await createResponse.json();
+      console.log('Record created successfully:', result);
     }
     
   } catch (error) {

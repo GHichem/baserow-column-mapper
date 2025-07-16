@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { SearchableSelect } from '@/components/ui/searchable-select';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
@@ -21,7 +21,6 @@ interface ColumnMapping {
   isMatched: boolean;
   similarity: number;
   isIgnored: boolean;
-  filter?: string;
 }
 
 const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingComplete, onBack }) => {
@@ -108,7 +107,6 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
           isMatched: false,
           similarity: 0,
           isIgnored: true,
-          filter: "", // reset filter
         };
       } else {
         updated[userColumn] = {
@@ -117,7 +115,6 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
           isMatched: true,
           similarity: calculateSimilarity(userColumn, targetColumn),
           isIgnored: false,
-          filter: "", // reset filter
         };
       }
 
@@ -154,7 +151,7 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
         return;
       }
       
-      onMappingComplete(finalMappings);
+      await onMappingComplete(finalMappings);
       
     } catch (error) {
       console.error('Import error:', error);
@@ -175,16 +172,6 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
     const unmapped = total - matched - ignored;
     
     return { total, matched, ignored, unmapped };
-  };
-
-  const handleFilterChange = (userColumn: string, filterValue: string) => {
-    setMappings(prev => ({
-      ...prev,
-      [userColumn]: {
-        ...prev[userColumn],
-        filter: filterValue,
-      },
-    }));
   };
 
   if (isLoading) {
@@ -263,6 +250,16 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
                 const mapping = mappings[userColumn];
                 const availableColumns = getAvailableTargetColumns(userColumn);
                 
+                // Prepare options for SearchableSelect
+                const selectOptions = [
+                  { value: 'ignore', label: 'Ignorieren' },
+                  ...availableColumns.map(col => ({ value: col, label: col })),
+                  // Include current mapping even if not available
+                  ...(mapping.targetColumn && !availableColumns.includes(mapping.targetColumn) 
+                    ? [{ value: mapping.targetColumn, label: mapping.targetColumn }] 
+                    : [])
+                ];
+                
                 return (
                   <div
                     key={index}
@@ -292,50 +289,12 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
                         <ArrowRight className="h-4 w-4 text-gray-400 flex-shrink-0" />
                         
                         <div className="min-w-0 flex-1">
-                          <Select
+                          <SearchableSelect
                             value={mapping.isIgnored ? 'ignore' : mapping.targetColumn || ''}
                             onValueChange={(value) => handleMappingChange(userColumn, value)}
-                          >
-                            <SelectTrigger className="w-full">
-                              <SelectValue placeholder="Zielfeld auswählen..." />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {/* Filter input */}
-                              <div className="p-2 border-b">
-                                <input
-                                  type="text"
-                                  placeholder="Suchen..."
-                                  value={mapping.filter || ""}
-                                  onChange={(e) => {
-                                    e.stopPropagation();
-                                    handleFilterChange(userColumn, e.target.value);
-                                  }}
-                                  onKeyDown={(e) => {
-                                    e.stopPropagation();
-                                  }}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                  }}
-                                  className="w-full border rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                />
-                              </div>
-                              <SelectItem value="ignore">
-                                <span className="text-orange-600">Ignorieren</span>
-                              </SelectItem>
-                              {(availableColumns.filter(col =>
-                                !mapping.filter || col.toLowerCase().includes(mapping.filter.toLowerCase())
-                              )).map(column => (
-                                <SelectItem key={column} value={column}>
-                                  {column}
-                                </SelectItem>
-                              ))}
-                              {mapping.targetColumn && !availableColumns.includes(mapping.targetColumn) && (
-                                <SelectItem value={mapping.targetColumn}>
-                                  {mapping.targetColumn}
-                                </SelectItem>
-                              )}
-                            </SelectContent>
-                          </Select>
+                            placeholder="Zielfeld auswählen..."
+                            options={selectOptions}
+                          />
                         </div>
                       </div>
                       
