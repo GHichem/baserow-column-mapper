@@ -13,7 +13,7 @@ const BASEROW_CONFIG = {
   tableId: '787',
   targetTableId: '790',
   baseUrl: 'https://baserow.app-inventor.org',
-  databaseId: '207', // Fixed: Changed from '59' to '207' to match your working curl command
+  databaseId: '207',
   // JWT Authentication credentials
   username: 'hgu@xiller.com',
   password: 'fEifpCnv5HpKVVv'
@@ -246,7 +246,10 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
     const tableResult = await tableResponse.json();
     console.log('Table created:', tableResult);
 
-    // Delete the default "Name" column that gets created automatically
+    // Wait a moment for table to be fully created
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Delete the default columns that get created automatically
     await deleteDefaultColumns(tableResult.id, jwtToken);
 
     // Add columns to the table
@@ -264,6 +267,8 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
 // Delete default columns from newly created table
 const deleteDefaultColumns = async (tableId: string, jwtToken: string) => {
   try {
+    console.log('Fetching table fields to delete default columns...');
+    
     // Get table fields
     const fieldsResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
       headers: {
@@ -273,23 +278,35 @@ const deleteDefaultColumns = async (tableId: string, jwtToken: string) => {
 
     if (fieldsResponse.ok) {
       const fields = await fieldsResponse.json();
+      console.log('Found fields:', fields);
       
-      // Delete default fields (usually "Name" field with id 1)
+      // Delete all default fields
       for (const field of fields) {
-        if (field.name === 'Name' || field.primary) {
-          await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/${field.id}/`, {
-            method: 'DELETE',
-            headers: {
-              'Authorization': `JWT ${jwtToken}`,
-            },
-          });
-          console.log('Deleted default column:', field.name);
+        console.log(`Attempting to delete field: ${field.name} (ID: ${field.id})`);
+        
+        const deleteResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/${field.id}/`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `JWT ${jwtToken}`,
+          },
+        });
+        
+        if (deleteResponse.ok) {
+          console.log('Successfully deleted default column:', field.name);
+        } else {
+          const errorText = await deleteResponse.text();
+          console.error('Failed to delete column:', field.name, errorText);
         }
+        
+        // Small delay between deletions
+        await new Promise(resolve => setTimeout(resolve, 200));
       }
+    } else {
+      console.error('Failed to fetch table fields');
     }
   } catch (error) {
     console.error('Error deleting default columns:', error);
-    // Don't throw here as it's not critical
+    // Don't throw here as it's not critical - continue with column creation
   }
 };
 
@@ -311,10 +328,15 @@ const createTableColumn = async (tableId: string, columnName: string, jwtToken: 
     });
 
     if (!columnResponse.ok) {
-      console.error('Column creation failed for:', columnName);
+      const errorText = await columnResponse.text();
+      console.error('Column creation failed for:', columnName, errorText);
     } else {
-      console.log('Created column:', columnName);
+      const result = await columnResponse.json();
+      console.log('Created column:', columnName, 'with ID:', result.id);
     }
+    
+    // Small delay between column creations
+    await new Promise(resolve => setTimeout(resolve, 300));
   } catch (error) {
     console.error('Error creating column:', columnName, error);
   }
@@ -465,14 +487,18 @@ export const processImportData = async (mappings: Record<string, string>): Promi
 
     // Process each data row (skip header)
     for (let i = 1; i < lines.length; i++) {
-      const values = lines[i].split(',').map(v => v.trim().replace(/"/g, ''));
+      const line = lines[i].trim();
+      if (!line) continue;
+      
+      // Parse CSV line properly (handle quoted values)
+      const values = parseCSVLine(line);
       
       // Map the values according to the column mappings
       const mappedData: any = {};
       
       headers.forEach((header, index) => {
-        if (mappings[header] && mappings[header] !== 'ignore' && values[index]) {
-          mappedData[mappings[header]] = values[index];
+        if (mappings[header] && mappings[header] !== 'ignore' && values[index] !== undefined) {
+          mappedData[mappings[header]] = values[index] || '';
         }
       });
 
@@ -488,6 +514,29 @@ export const processImportData = async (mappings: Record<string, string>): Promi
     console.error('Error processing import data:', error);
     throw error;
   }
+};
+
+// Helper function to properly parse CSV lines
+const parseCSVLine = (line: string): string[] => {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  
+  result.push(current.trim());
+  return result;
 };
 
 // Create record in the new table
