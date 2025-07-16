@@ -228,6 +228,7 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
       name: tableName
     };
 
+    console.log('Creating table with name:', tableName);
     const tableResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/tables/database/${BASEROW_CONFIG.databaseId}/`, {
       method: 'POST',
       headers: {
@@ -244,17 +245,22 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
     }
 
     const tableResult = await tableResponse.json();
-    console.log('Table created:', tableResult);
+    console.log('Table created successfully:', tableResult);
 
-    // Wait a moment for table to be fully created
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Wait for table to be fully created
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
     // Delete the default columns that get created automatically
     await deleteDefaultColumns(tableResult.id, jwtToken);
 
+    // Wait before adding new columns
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
     // Add columns to the table
     for (const columnName of columns) {
       await createTableColumn(tableResult.id, columnName, jwtToken);
+      // Wait between column creations
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     return tableResult.id.toString();
@@ -278,11 +284,11 @@ const deleteDefaultColumns = async (tableId: string, jwtToken: string) => {
 
     if (fieldsResponse.ok) {
       const fields = await fieldsResponse.json();
-      console.log('Found fields:', fields);
+      console.log('Found fields to delete:', fields);
       
-      // Delete all default fields
+      // Delete all default fields (including "Name")
       for (const field of fields) {
-        console.log(`Attempting to delete field: ${field.name} (ID: ${field.id})`);
+        console.log(`Deleting default field: ${field.name} (ID: ${field.id}, Type: ${field.type})`);
         
         const deleteResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/${field.id}/`, {
           method: 'DELETE',
@@ -298,11 +304,14 @@ const deleteDefaultColumns = async (tableId: string, jwtToken: string) => {
           console.error('Failed to delete column:', field.name, errorText);
         }
         
-        // Small delay between deletions
-        await new Promise(resolve => setTimeout(resolve, 200));
+        // Wait between deletions
+        await new Promise(resolve => setTimeout(resolve, 300));
       }
+      
+      console.log('All default columns deleted');
     } else {
-      console.error('Failed to fetch table fields');
+      const errorText = await fieldsResponse.text();
+      console.error('Failed to fetch table fields:', errorText);
     }
   } catch (error) {
     console.error('Error deleting default columns:', error);
@@ -313,6 +322,8 @@ const deleteDefaultColumns = async (tableId: string, jwtToken: string) => {
 // Create a column in the table
 const createTableColumn = async (tableId: string, columnName: string, jwtToken: string) => {
   try {
+    console.log(`Creating column: ${columnName} in table ${tableId}`);
+    
     const columnData = {
       name: columnName,
       type: 'text'
@@ -330,15 +341,15 @@ const createTableColumn = async (tableId: string, columnName: string, jwtToken: 
     if (!columnResponse.ok) {
       const errorText = await columnResponse.text();
       console.error('Column creation failed for:', columnName, errorText);
+      throw new Error(`Failed to create column: ${columnName}`);
     } else {
       const result = await columnResponse.json();
-      console.log('Created column:', columnName, 'with ID:', result.id);
+      console.log('Successfully created column:', columnName, 'with ID:', result.id);
+      return result.id;
     }
-    
-    // Small delay between column creations
-    await new Promise(resolve => setTimeout(resolve, 300));
   } catch (error) {
     console.error('Error creating column:', columnName, error);
+    throw error;
   }
 };
 
@@ -453,6 +464,8 @@ export const parseFileHeaders = async (file: File): Promise<string[]> => {
 // Process the mapped data and create records in new table
 export const processImportData = async (mappings: Record<string, string>): Promise<{ total: number, created: number, updated: number, tableId: string, tableName: string }> => {
   try {
+    console.log('Starting import process with mappings:', mappings);
+    
     // Get file content from stored info
     const uploadedFileInfo = sessionStorage.getItem('uploadedFileInfo');
     if (!uploadedFileInfo) {
@@ -467,15 +480,32 @@ export const processImportData = async (mappings: Record<string, string>): Promi
       throw new Error('No file content found');
     }
     
+    console.log('Processing file content with length:', content.length);
+    
     const lines = content.split('\n').filter(line => line.trim().length > 0);
-    const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
+    console.log('Found', lines.length, 'lines in file');
+    
+    if (lines.length < 2) {
+      throw new Error('File must have at least a header row and one data row');
+    }
+    
+    const headers = parseCSVLine(lines[0]);
+    console.log('Parsed headers:', headers);
     
     // Get unique mapped columns
     const mappedColumns = [...new Set(Object.values(mappings).filter(col => col !== 'ignore'))];
+    console.log('Mapped columns for new table:', mappedColumns);
+    
+    if (mappedColumns.length === 0) {
+      throw new Error('No columns mapped for import');
+    }
     
     // Create new table
     const tableName = `${userData.company}_${userData.vorname}_${userData.nachname}_${new Date().toISOString().slice(0, 10)}`;
+    console.log('Creating table with name:', tableName);
+    
     const tableId = await createNewTable(tableName, mappedColumns);
+    console.log('Table created with ID:', tableId);
     
     // Update the record in table 787 with the new table ID
     await updateRecordWithTableId(fileInfo.recordId, tableId);
@@ -486,29 +516,46 @@ export const processImportData = async (mappings: Record<string, string>): Promi
     const jwtToken = await getJWTToken();
 
     // Process each data row (skip header)
+    console.log('Starting to import', lines.length - 1, 'data rows');
+    
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line) continue;
       
+      console.log(`Processing row ${i}:`, line.substring(0, 100) + '...');
+      
       // Parse CSV line properly (handle quoted values)
       const values = parseCSVLine(line);
+      console.log(`Parsed values for row ${i}:`, values);
       
       // Map the values according to the column mappings
       const mappedData: any = {};
       
       headers.forEach((header, index) => {
         if (mappings[header] && mappings[header] !== 'ignore' && values[index] !== undefined) {
-          mappedData[mappings[header]] = values[index] || '';
+          const targetColumn = mappings[header];
+          const value = values[index] || '';
+          mappedData[targetColumn] = value;
+          console.log(`Mapping: ${header} -> ${targetColumn} = "${value}"`);
         }
       });
+
+      console.log(`Mapped data for row ${i}:`, mappedData);
 
       // Only process if we have some mapped data
       if (Object.keys(mappedData).length > 0) {
         await createRecordInNewTable(tableId, mappedData, jwtToken);
         created++;
+        console.log(`Successfully created record ${created}`);
+        
+        // Small delay between record creations
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } else {
+        console.log(`Skipping row ${i} - no mapped data`);
       }
     }
 
+    console.log(`Import completed. Created ${created} records in table ${tableId}`);
     return { total: created, created, updated: 0, tableId, tableName };
   } catch (error) {
     console.error('Error processing import data:', error);
@@ -528,14 +575,14 @@ const parseCSVLine = (line: string): string[] => {
     if (char === '"') {
       inQuotes = !inQuotes;
     } else if (char === ',' && !inQuotes) {
-      result.push(current.trim());
+      result.push(current.trim().replace(/^"(.*)"$/, '$1'));
       current = '';
     } else {
       current += char;
     }
   }
   
-  result.push(current.trim());
+  result.push(current.trim().replace(/^"(.*)"$/, '$1'));
   return result;
 };
 
@@ -556,13 +603,17 @@ const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken
     if (!createResponse.ok) {
       const errorText = await createResponse.text();
       console.error('Failed to create record in new table:', errorText);
+      console.error('Record data was:', recordData);
+      throw new Error(`Failed to create record: ${errorText}`);
     } else {
       const result = await createResponse.json();
-      console.log('Record created successfully:', result);
+      console.log('Record created successfully with ID:', result.id);
+      return result;
     }
     
   } catch (error) {
     console.error('Error creating record in new table:', error);
+    throw error;
   }
 };
 
