@@ -167,25 +167,47 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
 
 // Process large files in chunks to avoid memory issues
 const processFileInChunks = async (file: File): Promise<string> => {
-  const chunkSize = 1024 * 1024; // 1MB chunks
-  let content = '';
+  const maxFileSize = 50 * 1024 * 1024; // 50MB limit
   
-  for (let start = 0; start < file.size; start += chunkSize) {
-    const chunk = file.slice(start, start + chunkSize);
-    const chunkText = await chunk.text();
-    content += chunkText;
+  if (file.size > maxFileSize) {
+    console.warn(`Large file detected (${(file.size / 1024 / 1024).toFixed(2)}MB). Processing first portion only.`);
+  }
+  
+  const chunkSize = 2 * 1024 * 1024; // 2MB chunks for better performance
+  let content = '';
+  let processedSize = 0;
+  const maxProcessSize = Math.min(file.size, 20 * 1024 * 1024); // Process max 20MB
+  
+  for (let start = 0; start < file.size && processedSize < maxProcessSize; start += chunkSize) {
+    const end = Math.min(start + chunkSize, file.size);
+    const chunk = file.slice(start, end);
     
-    // For very large files, we might want to limit the content we store
-    // Keep only first 100 lines for header parsing
-    if (start === 0) {
-      const lines = content.split('\n');
-      if (lines.length > 100) {
-        content = lines.slice(0, 100).join('\n');
-        break;
+    try {
+      const chunkText = await chunk.text();
+      content += chunkText;
+      processedSize += chunkText.length;
+      
+      // Add delay for large files to prevent browser freeze
+      if (file.size > 10 * 1024 * 1024) {
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
+      
+      // For very large files, limit content for header parsing
+      if (start === 0) {
+        const lines = content.split('\n');
+        if (lines.length > 1000) {
+          content = lines.slice(0, 1000).join('\n');
+          console.log('Limited content to first 1000 lines for processing');
+          break;
+        }
+      }
+    } catch (error) {
+      console.error('Error processing chunk:', error);
+      throw new Error('Failed to process file chunk. File may be corrupted or too large.');
     }
   }
   
+  console.log(`Processed ${(processedSize / 1024 / 1024).toFixed(2)}MB of ${(file.size / 1024 / 1024).toFixed(2)}MB file`);
   return content;
 };
 
@@ -247,8 +269,8 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
     const tableResult = await tableResponse.json();
     console.log('Table created successfully:', tableResult);
 
-    // Wait for table to be fully created
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // Wait for table to be fully created (increased for larger files)
+    await new Promise(resolve => setTimeout(resolve, 300));
 
     // Handle the primary "Name" field and create other columns
     await setupTableColumns(tableResult.id, columns, jwtToken);
@@ -305,8 +327,8 @@ const setupTableColumns = async (tableId: string, columns: string[], jwtToken: s
         throw new Error(`Failed to rename primary field: ${errorText}`);
       }
       
-      // Wait after rename
-      await new Promise(resolve => setTimeout(resolve, 50));
+      // Wait after rename (increased for stability)
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
 
     // Delete any other default fields (but not the primary one)
@@ -328,7 +350,7 @@ const setupTableColumns = async (tableId: string, columns: string[], jwtToken: s
           console.log('Could not delete field (expected for some default fields):', field.name, errorText);
         }
         
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 200));
       }
     }
 
@@ -341,9 +363,9 @@ const setupTableColumns = async (tableId: string, columns: string[], jwtToken: s
       // Wait between column creations
     }
 
-    // Extra wait to ensure all field operations are complete
+    // Extra wait to ensure all field operations are complete (increased for large files)
     console.log('Waiting extra time for all field operations to complete...');
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await new Promise(resolve => setTimeout(resolve, 500));
     
   } catch (error) {
     console.error('Error setting up table columns:', error);
@@ -635,8 +657,8 @@ for (let i = 1; i < lines.length; i++) {
       created++;
       console.log(`Successfully created record ${created}`);
       
-      // Small delay between record creations
-      await new Promise(resolve => setTimeout(resolve, 30));
+      // Small delay between record creations (increased for stability)
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
 
     // Verify records were actually created
