@@ -26,11 +26,11 @@ const Index = () => {
 
         {/* Footer */}
         <div className="text-center mt-4 py-2">
-          <p className="text-xs md:text-sm text-gray-500">
-             © 2025 XiLLeR GmbH - <a href="https://www.xiller.de/Impressum/" className="hover:text-gray-700 transition-colors">Impressum</a> | <a href="https://www.xiller.de/datenschutzerklaerung/" className="hover:text-gray-700 transition-colors">Datenschutzerklärung</a>
+          <p className="text-xs md:text-sm text-gray-600">
+             © 2025 XiLLeR GmbH - <a href="https://www.xiller.de/Impressum/" className="hover:text-gray-800 transition-colors">Impressum</a> | <a href="https://www.xiller.de/datenschutzerklaerung/" className="hover:text-gray-800 transition-colors">Datenschutzerklärung</a>
           </p>
-          <p className="text-xs text-gray-400 mt-1">
-            <a href="https://www.beste-medien-werbe-agentur.de/Angebot/Consulting.html" className="hover:text-gray-600 transition-colors">Konzeption, Design, Programmierung: Beste Medien Werbe Agentur</a>
+          <p className="text-xs text-gray-500 mt-1">
+            <a href="https://www.beste-medien-werbe-agentur.de/Angebot/Consulting.html" className="hover:text-gray-700 transition-colors">Konzeption, Design, Programmierung: Beste Medien Werbe Agentur</a>
           </p>
         </div>
       </div>

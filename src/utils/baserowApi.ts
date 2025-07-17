@@ -165,41 +165,48 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
   }
 };
 
-// Process large files in chunks to avoid memory issues
+// Process file in chunks to handle large files efficiently
 const processFileInChunks = async (file: File): Promise<string> => {
-  const maxFileSize = 50 * 1024 * 1024; // 50MB limit
-  
-  if (file.size > maxFileSize) {
-    console.warn(`Large file detected (${(file.size / 1024 / 1024).toFixed(2)}MB). Processing first portion only.`);
-  }
-  
-  const chunkSize = 2 * 1024 * 1024; // 2MB chunks for better performance
+  const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB chunks for better performance
   let content = '';
   let processedSize = 0;
-  const maxProcessSize = Math.min(file.size, 20 * 1024 * 1024); // Process max 20MB
+  const maxFileSize = 100 * 1024 * 1024; // Increased to 100MB limit
   
-  for (let start = 0; start < file.size && processedSize < maxProcessSize; start += chunkSize) {
-    const end = Math.min(start + chunkSize, file.size);
+  if (file.size > maxFileSize) {
+    throw new Error(`File size (${(file.size / 1024 / 1024).toFixed(2)}MB) exceeds maximum allowed size of ${maxFileSize / 1024 / 1024}MB`);
+  }
+  
+  console.log(`Starting to process file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+  
+  // Process file in chunks with improved memory management
+  const chunks = [];
+  for (let start = 0; start < file.size; start += CHUNK_SIZE) {
+    const end = Math.min(start + CHUNK_SIZE, file.size);
     const chunk = file.slice(start, end);
+    chunks.push(chunk);
+  }
+  
+  // Process chunks sequentially to avoid memory issues
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
     
     try {
       const chunkText = await chunk.text();
       content += chunkText;
-      processedSize += chunkText.length;
+      processedSize += chunk.size;
       
-      // Add delay for large files to prevent browser freeze
-      if (file.size > 10 * 1024 * 1024) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+      console.log(`Processed chunk ${i + 1}/${chunks.length}: ${(processedSize / 1024 / 1024).toFixed(2)}MB / ${(file.size / 1024 / 1024).toFixed(2)}MB`);
+      
+      // Check for reasonable line count (increased limit for large files)
+      const lines = content.split('\n');
+      if (lines.length > 10000) {
+        console.log(`Limited content to first ${lines.length} lines for processing`);
+        break;
       }
       
-      // For very large files, limit content for header parsing
-      if (start === 0) {
-        const lines = content.split('\n');
-        if (lines.length > 1000) {
-          content = lines.slice(0, 1000).join('\n');
-          console.log('Limited content to first 1000 lines for processing');
-          break;
-        }
+      // Add small delay between chunks for stability
+      if (i < chunks.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
     } catch (error) {
       console.error('Error processing chunk:', error);
@@ -207,7 +214,7 @@ const processFileInChunks = async (file: File): Promise<string> => {
     }
   }
   
-  console.log(`Processed ${(processedSize / 1024 / 1024).toFixed(2)}MB of ${(file.size / 1024 / 1024).toFixed(2)}MB file`);
+  console.log(`Successfully processed ${(processedSize / 1024 / 1024).toFixed(2)}MB of ${(file.size / 1024 / 1024).toFixed(2)}MB file`);
   return content;
 };
 
@@ -649,16 +656,29 @@ for (let i = 1; i < lines.length; i++) {
 }
 
 
-    // Create records in batches
+    // Create records in batches for better performance with large files
     console.log(`Creating ${recordsToCreate.length} records in table ${tableId}`);
     
-    for (const recordData of recordsToCreate) {
-      await createRecordInNewTable(tableId, recordData, jwtToken);
-      created++;
-      console.log(`Successfully created record ${created}`);
+    const BATCH_SIZE = 50; // Process in smaller batches for large files
+    
+    for (let i = 0; i < recordsToCreate.length; i += BATCH_SIZE) {
+      const batch = recordsToCreate.slice(i, i + BATCH_SIZE);
+      console.log(`Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(recordsToCreate.length / BATCH_SIZE)} (${batch.length} records)`);
       
-      // Small delay between record creations (increased for stability)
-      await new Promise(resolve => setTimeout(resolve, 100));
+      for (const recordData of batch) {
+        await createRecordInNewTable(tableId, recordData, jwtToken);
+        created++;
+        console.log(`Successfully created record ${created}/${recordsToCreate.length}`);
+        
+        // Smaller delay between records within batch
+        await new Promise(resolve => setTimeout(resolve, 75));
+      }
+      
+      // Longer delay between batches for stability
+      if (i + BATCH_SIZE < recordsToCreate.length) {
+        console.log('Waiting between batches for stability...');
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
     }
 
     // Verify records were actually created
