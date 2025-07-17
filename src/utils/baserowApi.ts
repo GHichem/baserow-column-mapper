@@ -165,18 +165,13 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
   }
 };
 
-// Process file in chunks to handle large files efficiently
+// Process file in chunks to handle large files efficiently - NO SIZE LIMITS
 const processFileInChunks = async (file: File): Promise<string> => {
-  const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB chunks for better performance
+  const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks for better performance
   let content = '';
   let processedSize = 0;
-  const maxFileSize = 100 * 1024 * 1024; // Increased to 100MB limit
   
-  if (file.size > maxFileSize) {
-    throw new Error(`File size (${(file.size / 1024 / 1024).toFixed(2)}MB) exceeds maximum allowed size of ${maxFileSize / 1024 / 1024}MB`);
-  }
-  
-  console.log(`Starting to process file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+  console.log(`Starting to process file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB) - No size restrictions`);
   
   // Process file in chunks with improved memory management
   const chunks = [];
@@ -197,24 +192,17 @@ const processFileInChunks = async (file: File): Promise<string> => {
       
       console.log(`Processed chunk ${i + 1}/${chunks.length}: ${(processedSize / 1024 / 1024).toFixed(2)}MB / ${(file.size / 1024 / 1024).toFixed(2)}MB`);
       
-      // Check for reasonable line count (increased limit for large files)
-      const lines = content.split('\n');
-      if (lines.length > 10000) {
-        console.log(`Limited content to first ${lines.length} lines for processing`);
-        break;
-      }
-      
       // Add small delay between chunks for stability
       if (i < chunks.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
     } catch (error) {
       console.error('Error processing chunk:', error);
-      throw new Error('Failed to process file chunk. File may be corrupted or too large.');
+      throw new Error('Failed to process file chunk. File may be corrupted.');
     }
   }
   
-  console.log(`Successfully processed ${(processedSize / 1024 / 1024).toFixed(2)}MB of ${(file.size / 1024 / 1024).toFixed(2)}MB file`);
+  console.log(`Successfully processed entire file: ${(processedSize / 1024 / 1024).toFixed(2)}MB`);
   return content;
 };
 

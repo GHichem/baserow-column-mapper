@@ -4,7 +4,7 @@ import FileUploadForm from '@/components/FileUploadForm';
 
 const Index = () => {
   return (
-    <div className="h-screen bg-gradient-to-br from-blue-50 to-purple-50 flex flex-col">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-purple-50 flex flex-col">
       <div className="flex-1 max-w-4xl mx-auto px-4 py-6 flex flex-col">
         {/* Header */}
         <div className="text-center mb-6">
