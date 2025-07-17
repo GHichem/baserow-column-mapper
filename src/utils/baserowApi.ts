@@ -48,6 +48,8 @@ const getJWTToken = async (): Promise<string> => {
 
 export const uploadToBaserow = async (data: UploadData): Promise<void> => {
   try {
+    console.log('Starting upload process for file:', data.file.name, 'Size:', (data.file.size / 1024 / 1024).toFixed(2), 'MB');
+    
     // Check for existing record first
     const existingRecord = await findExistingRecord(data.vorname, data.nachname, data.email, data.company);
     
@@ -84,138 +86,337 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
       console.log('Successfully updated existing record:', updateResult);
       
       // Store file info for mapping page - process file in chunks for large files
-      const fileContent = await processFileInChunks(data.file);
-      sessionStorage.setItem('uploadedFileInfo', JSON.stringify({
-        file: { url: existingRecord.Datei?.[0]?.url || '' },
-        userData: data,
-        fileName: data.file.name,
-        fileContent: fileContent,
-        recordId: existingRecord.id
-      }));
+      try {
+        console.log('Processing file content for existing record...');
+        const fileContent = await processFileInChunks(data.file);
+        
+        // For very large files, store only header information instead of full content
+        const isLargeFile = data.file.size > 10 * 1024 * 1024; // 10MB threshold
+        let contentToStore = fileContent;
+        
+        if (isLargeFile) {
+          console.log('Large file detected, storing only headers and preview...');
+          const lines = fileContent.split('\n');
+          // Store only first 1000 lines for large files to avoid session storage issues
+          contentToStore = lines.slice(0, 1000).join('\n');
+        }
+        
+        const fileInfo = {
+          file: { url: existingRecord.Datei?.[0]?.url || '' },
+          userData: data,
+          fileName: data.file.name,
+          fileContent: contentToStore,
+          recordId: existingRecord.id,
+          isLargeFile: isLargeFile,
+          originalFileSize: data.file.size
+        };
+        
+        try {
+          sessionStorage.setItem('uploadedFileInfo', JSON.stringify(fileInfo));
+          console.log('File info stored successfully for existing record');
+        } catch (storageError) {
+          console.error('Session storage error:', storageError);
+          // Even if storage fails, we can continue - we'll re-process the file later
+          sessionStorage.setItem('uploadedFileInfo', JSON.stringify({
+            ...fileInfo,
+            fileContent: fileContent.substring(0, 50000), // Store only first 50KB
+            needsReprocessing: true
+          }));
+        }
+        
+      } catch (processingError) {
+        console.error('Error processing file content:', processingError);
+        throw new Error('Fehler beim Verarbeiten der Datei. Die Datei ist möglicherweise zu groß oder beschädigt.');
+      }
       
       return;
     }
 
-    // First, upload the file to Baserow
+    // First, upload the file to Baserow with timeout handling
+    console.log('Uploading file to Baserow...');
     const fileFormData = new FormData();
     fileFormData.append('file', data.file);
 
-    const fileUploadResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/user-files/upload-file/`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
-      },
-      body: fileFormData,
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minute timeout
 
-    if (!fileUploadResponse.ok) {
-      const errorText = await fileUploadResponse.text();
-      console.error('File upload failed:', errorText);
-      throw new Error('Datei-Upload fehlgeschlagen');
+    try {
+      const fileUploadResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/user-files/upload-file/`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
+        },
+        body: fileFormData,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!fileUploadResponse.ok) {
+        const errorText = await fileUploadResponse.text();
+        console.error('File upload failed:', errorText);
+        throw new Error(`Datei-Upload fehlgeschlagen: ${errorText}`);
+      }
+
+      const fileUploadResult = await fileUploadResponse.json();
+      console.log('File uploaded successfully:', fileUploadResult);
+      
+      // Process file in chunks for large files with error handling
+      console.log('Processing file content...');
+      let fileContent = '';
+      try {
+        fileContent = await processFileInChunks(data.file);
+        console.log('File content processed successfully, length:', fileContent.length);
+      } catch (processingError) {
+        console.error('Error processing file content:', processingError);
+        throw new Error('Fehler beim Verarbeiten der Datei. Die Datei ist möglicherweise zu groß oder beschädigt.');
+      }
+      
+      // Then, create a row in the table with the form data and file reference
+      console.log('Creating database record...');
+      const rowData = {
+        Vorname: data.vorname,
+        Nachname: data.nachname,
+        EMAIL: data.email,
+        Company: data.company,
+        Datei: [fileUploadResult],
+        Dateiname: data.file.name,
+        CreatedTableId: null, // Will be updated after table creation
+      };
+
+      const rowResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.tableId}/?user_field_names=true`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(rowData),
+      });
+
+      if (!rowResponse.ok) {
+        const errorText = await rowResponse.text();
+        console.error('Row creation failed:', errorText);
+        console.error('Response status:', rowResponse.status);
+        throw new Error(`Datensatz konnte nicht erstellt werden: ${errorText}`);
+      }
+
+      const rowResult = await rowResponse.json();
+      console.log('Successfully created row:', rowResult);
+      
+      // Store file info in session for the mapping page with size check
+      const isLargeFile = data.file.size > 10 * 1024 * 1024; // 10MB threshold
+      let contentToStore = fileContent;
+      
+      if (isLargeFile) {
+        console.log('Large file detected, storing only headers and preview...');
+        const lines = fileContent.split('\n');
+        // Store only first 1000 lines for large files to avoid session storage issues
+        contentToStore = lines.slice(0, 1000).join('\n');
+      }
+      
+      const fileInfo = {
+        file: fileUploadResult,
+        userData: data,
+        fileName: data.file.name,
+        fileContent: contentToStore,
+        recordId: rowResult.id,
+        isLargeFile: isLargeFile,
+        originalFileSize: data.file.size,
+        fullFileContent: isLargeFile ? null : fileContent // Store full content only for smaller files
+      };
+
+      try {
+        const fileInfoString = JSON.stringify(fileInfo);
+        // Check if the data is too large for session storage (usually ~5-10MB limit)
+        if (fileInfoString.length > 5 * 1024 * 1024) { // 5MB limit
+          console.warn('File content too large for session storage, storing minimal info...');
+          // Store a minimal version
+          const minimalFileInfo = {
+            file: fileUploadResult,
+            userData: data,
+            fileName: data.file.name,
+            fileContent: fileContent.substring(0, 50000), // First 50KB only
+            recordId: rowResult.id,
+            isLargeFile: true,
+            originalFileSize: data.file.size,
+            needsReprocessing: true
+          };
+          sessionStorage.setItem('uploadedFileInfo', JSON.stringify(minimalFileInfo));
+        } else {
+          sessionStorage.setItem('uploadedFileInfo', fileInfoString);
+        }
+        console.log('File info stored in session storage');
+      } catch (storageError) {
+        console.error('Error storing file info in session storage:', storageError);
+        // Store absolute minimum required for navigation
+        const emergencyFileInfo = {
+          file: fileUploadResult,
+          userData: data,
+          fileName: data.file.name,
+          fileContent: '', // Empty content - will need to reprocess
+          recordId: rowResult.id,
+          isLargeFile: true,
+          originalFileSize: data.file.size,
+          needsReprocessing: true
+        };
+        try {
+          sessionStorage.setItem('uploadedFileInfo', JSON.stringify(emergencyFileInfo));
+          console.log('Stored emergency file info');
+        } catch (emergencyError) {
+          console.error('Even emergency storage failed:', emergencyError);
+          throw new Error('Fehler beim Speichern der Datei-Informationen. Die Datei ist zu groß für den Browser-Speicher.');
+        }
+      }
+
+    } catch (uploadError) {
+      clearTimeout(timeoutId);
+      if (uploadError.name === 'AbortError') {
+        throw new Error('Datei-Upload dauerte zu lange. Bitte versuchen Sie es mit einer kleineren Datei.');
+      }
+      throw uploadError;
     }
-
-    const fileUploadResult = await fileUploadResponse.json();
-    console.log('File uploaded successfully:', fileUploadResult);
-    
-    // Process file in chunks for large files
-    const fileContent = await processFileInChunks(data.file);
-    
-    // Then, create a row in the table with the form data and file reference
-    const rowData = {
-      Vorname: data.vorname,
-      Nachname: data.nachname,
-      EMAIL: data.email,
-      Company: data.company,
-      Datei: [fileUploadResult],
-      Dateiname: data.file.name,
-      CreatedTableId: null, // Will be updated after table creation
-    };
-
-    const rowResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.tableId}/?user_field_names=true`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(rowData),
-    });
-
-    if (!rowResponse.ok) {
-      const errorText = await rowResponse.text();
-      console.error('Row creation failed:', errorText);
-      console.error('Response status:', rowResponse.status);
-      throw new Error('Zeile konnte nicht erstellt werden');
-    }
-
-    const rowResult = await rowResponse.json();
-    console.log('Successfully created row:', rowResult);
-    
-    // Store file info in session for the mapping page
-    sessionStorage.setItem('uploadedFileInfo', JSON.stringify({
-      file: fileUploadResult,
-      userData: data,
-      fileName: data.file.name,
-      fileContent: fileContent,
-      recordId: rowResult.id
-    }));
 
   } catch (error) {
     console.error('Baserow upload error:', error);
-    throw error;
+    
+    // Provide more specific error messages
+    if (error instanceof Error) {
+      if (error.message.includes('Failed to fetch')) {
+        throw new Error('Netzwerkfehler. Bitte überprüfen Sie Ihre Internetverbindung.');
+      } else if (error.message.includes('timeout') || error.message.includes('AbortError')) {
+        throw new Error('Die Anfrage dauerte zu lange. Bitte versuchen Sie es mit einer kleineren Datei.');
+      } else if (error.message.includes('too large')) {
+        throw new Error('Die Datei ist zu groß. Bitte verwenden Sie eine kleinere Datei.');
+      } else {
+        throw error;
+      }
+    }
+    
+    throw new Error('Ein unbekannter Fehler ist aufgetreten. Bitte versuchen Sie es erneut.');
   }
 };
 
-// Process file in chunks to handle large files efficiently
+// Process file in chunks to handle very large files efficiently
 const processFileInChunks = async (file: File): Promise<string> => {
-  const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB chunks for better performance
+  const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks for better performance with large files
   let content = '';
   let processedSize = 0;
-  const maxFileSize = 100 * 1024 * 1024; // Increased to 100MB limit
+  const maxFileSize = 500 * 1024 * 1024; // Increased to 500MB limit for very large files
   
-  if (file.size > maxFileSize) {
-    throw new Error(`File size (${(file.size / 1024 / 1024).toFixed(2)}MB) exceeds maximum allowed size of ${maxFileSize / 1024 / 1024}MB`);
-  }
-  
-  console.log(`Starting to process file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
-  
-  // Process file in chunks with improved memory management
-  const chunks = [];
-  for (let start = 0; start < file.size; start += CHUNK_SIZE) {
-    const end = Math.min(start + CHUNK_SIZE, file.size);
-    const chunk = file.slice(start, end);
-    chunks.push(chunk);
-  }
-  
-  // Process chunks sequentially to avoid memory issues
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    
-    try {
-      const chunkText = await chunk.text();
-      content += chunkText;
-      processedSize += chunk.size;
-      
-      console.log(`Processed chunk ${i + 1}/${chunks.length}: ${(processedSize / 1024 / 1024).toFixed(2)}MB / ${(file.size / 1024 / 1024).toFixed(2)}MB`);
-      
-      // Check for reasonable line count (increased limit for large files)
-      const lines = content.split('\n');
-      if (lines.length > 10000) {
-        console.log(`Limited content to first ${lines.length} lines for processing`);
-        break;
-      }
-      
-      // Add small delay between chunks for stability
-      if (i < chunks.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 50));
-      }
-    } catch (error) {
-      console.error('Error processing chunk:', error);
-      throw new Error('Failed to process file chunk. File may be corrupted or too large.');
+  try {
+    if (file.size > maxFileSize) {
+      throw new Error(`Datei zu groß (${(file.size / 1024 / 1024).toFixed(2)}MB). Maximale Größe: ${maxFileSize / 1024 / 1024}MB`);
     }
+    
+    console.log(`Starting to process file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+    
+    // For very large files, process only what we need for headers + some sample data
+    if (file.size > 100 * 1024 * 1024) { // 100MB threshold for limited processing
+      console.log('Very large file detected, processing only essential parts...');
+      
+      // Read only the first 10MB for headers and sample data
+      const essentialChunk = file.slice(0, 10 * 1024 * 1024);
+      const essentialContent = await essentialChunk.text();
+      
+      console.log(`Processed essential content: ${(essentialChunk.size / 1024 / 1024).toFixed(2)}MB`);
+      return essentialContent;
+    }
+    
+    // For large files, use streaming
+    if (file.size > 50 * 1024 * 1024) { // 50MB threshold for streaming
+      console.log('Large file detected, using streaming approach');
+      return await processLargeFileStreaming(file);
+    }
+    
+    // Process file in chunks with improved memory management
+    const chunks = [];
+    for (let start = 0; start < file.size; start += CHUNK_SIZE) {
+      const end = Math.min(start + CHUNK_SIZE, file.size);
+      const chunk = file.slice(start, end);
+      chunks.push(chunk);
+    }
+    
+    // Process chunks sequentially to avoid memory issues
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      
+      try {
+        const chunkText = await chunk.text();
+        content += chunkText;
+        processedSize += chunk.size;
+        
+        console.log(`Processed chunk ${i + 1}/${chunks.length}: ${(processedSize / 1024 / 1024).toFixed(2)}MB / ${(file.size / 1024 / 1024).toFixed(2)}MB`);
+        
+        // Add small delay between chunks for stability
+        if (i < chunks.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 25));
+        }
+      } catch (chunkError) {
+        console.error('Error processing chunk:', chunkError);
+        throw new Error(`Fehler beim Verarbeiten von Chunk ${i + 1}. Die Datei ist möglicherweise beschädigt.`);
+      }
+    }
+    
+    console.log(`Successfully processed ${(processedSize / 1024 / 1024).toFixed(2)}MB of ${(file.size / 1024 / 1024).toFixed(2)}MB file`);
+    return content;
+    
+  } catch (error) {
+    console.error('Error in processFileInChunks:', error);
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new Error('Unbekannter Fehler beim Verarbeiten der Datei.');
   }
+};
+
+// Streaming approach for very large files
+const processLargeFileStreaming = async (file: File): Promise<string> => {
+  const STREAM_CHUNK_SIZE = 1024 * 1024; // 1MB streaming chunks
+  let content = '';
+  let totalProcessed = 0;
   
-  console.log(`Successfully processed ${(processedSize / 1024 / 1024).toFixed(2)}MB of ${(file.size / 1024 / 1024).toFixed(2)}MB file`);
-  return content;
+  console.log('Processing large file with streaming approach');
+  
+  return new Promise((resolve, reject) => {
+    try {
+      const reader = file.stream().getReader();
+      const decoder = new TextDecoder();
+      
+      const processStream = async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            
+            if (done) {
+              console.log(`Streaming complete. Total processed: ${(totalProcessed / 1024 / 1024).toFixed(2)}MB`);
+              resolve(content);
+              break;
+            }
+            
+            const chunk = decoder.decode(value, { stream: true });
+            content += chunk;
+            totalProcessed += value.length;
+            
+            // Log progress every 10MB
+            if (totalProcessed % (10 * 1024 * 1024) < value.length) {
+              console.log(`Streaming progress: ${(totalProcessed / 1024 / 1024).toFixed(2)}MB processed`);
+            }
+            
+            // Small delay to prevent blocking
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
+        } catch (error) {
+          console.error('Error in streaming:', error);
+          reject(new Error('Fehler beim Streaming der Datei. Die Datei ist möglicherweise beschädigt.'));
+        }
+      };
+      
+      processStream();
+    } catch (error) {
+      console.error('Error setting up stream:', error);
+      reject(new Error('Fehler beim Einrichten des Datei-Streams.'));
+    }
+  });
 };
 
 // Helper function to find existing records
@@ -493,7 +694,18 @@ export const parseFileHeaders = async (file: File): Promise<string[]> => {
     const fileInfo = JSON.parse(uploadedFileInfo);
     
     // Use stored file content instead of fetching from URL
-    const content = fileInfo.fileContent;
+    let content = fileInfo.fileContent;
+    
+    // If we need to reprocess or content is empty for large files, reprocess just the headers
+    if (!content || fileInfo.needsReprocessing || (fileInfo.isLargeFile && content.length < 1000)) {
+      console.log('Reprocessing file to get headers...');
+      
+      // For large files, read only the first chunk to get headers
+      const headerChunk = file.slice(0, 1024 * 1024); // First 1MB should contain headers
+      content = await headerChunk.text();
+      
+      console.log('Reprocessed headers from first chunk');
+    }
     
     if (!content) {
       throw new Error('No file content found');
@@ -505,7 +717,7 @@ export const parseFileHeaders = async (file: File): Promise<string[]> => {
       // Parse CSV
       const lines = content.split('\n');
       if (lines.length > 0) {
-        const headers = lines[0].split(',').map(header => header.trim().replace(/"/g, ''));
+        const headers = parseCSVLine(lines[0]);
         console.log('Parsed headers:', headers);
         return headers.filter(header => header.length > 0);
       } else {
@@ -534,20 +746,30 @@ export const processImportData = async (mappings: Record<string, string>): Promi
     }
 
     const fileInfo = JSON.parse(uploadedFileInfo);
-    const content = fileInfo.fileContent;
     const userData = fileInfo.userData;
 
+    // Fetch entire file content from server or use stored content as fallback
+    let content: string;
+    if (fileInfo.fileUrl) {
+      // fetch _entire_ file text from the server
+      const res = await fetch(fileInfo.fileUrl);
+      content = await res.text();
+    } else {
+      // fallback for small files
+      content = fileInfo.fileContent!;
+    }
+
     if (!content) {
-      throw new Error('No file content found');
+      throw new Error('No file content found and unable to fetch from server');
     }
     
     console.log('Processing file content with length:', content.length);
     
+    // Improved line splitting and filtering for very large files
     const lines = content
-  .split(/\r?\n/) // handle both \n and \r\n
-  .map(line => line.trim())
-  .filter(line => line && !/^["',\s]*$/.test(line));
-
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(line => line && !/^["',\s]*$/.test(line));
 
     console.log('Found', lines.length, 'lines in file');
     
@@ -573,22 +795,22 @@ export const processImportData = async (mappings: Record<string, string>): Promi
     const tableId = await createNewTable(tableName, mappedColumns);
     console.log('Table created with ID:', tableId);
     
-    // 🧹 Clean up any default rows that Baserow might have added automatically
-const cleanupToken = await getJWTToken();
-const defaultRows = await verifyRecordsCreated(tableId);
+    // Clean up any default rows that Baserow might have added automatically
+    const cleanupToken = await getJWTToken();
+    const defaultRows = await verifyRecordsCreated(tableId);
 
-if (defaultRows.length > 0) {
-  console.warn(`🚨 Found ${defaultRows.length} default rows – cleaning up...`);
-  for (const row of defaultRows) {
-    await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${tableId}/${row.id}/`, {
-      method: 'DELETE',
-      headers: {
-        'Authorization': `JWT ${cleanupToken}`
+    if (defaultRows.length > 0) {
+      console.warn(`🚨 Found ${defaultRows.length} default rows – cleaning up...`);
+      for (const row of defaultRows) {
+        await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${tableId}/${row.id}/`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `JWT ${cleanupToken}`
+          }
+        });
       }
-    });
-  }
-  console.log(`✅ Deleted ${defaultRows.length} default rows from new table`);
-}
+      console.log(`✅ Deleted ${defaultRows.length} default rows from new table`);
+    }
 
     // Update the record in table 787 with the new table ID
     await updateRecordWithTableId(fileInfo.recordId, tableId);
@@ -602,83 +824,17 @@ if (defaultRows.length > 0) {
     // Get fresh JWT token for record creation
     const jwtToken = await getJWTToken();
 
-    // Process each data row (skip header)
+    // Process data rows with streaming approach for very large files
     console.log('Starting to import', lines.length - 1, 'data rows');
     
-    const recordsToCreate = [];
+    const totalDataRows = lines.length - 1;
+    const isVeryLargeFile = totalDataRows > 10000;
     
-for (let i = 1; i < lines.length; i++) {
-  const line = lines[i].trim();
-
-  // Skip if the entire line is empty or contains only commas/quotes/spaces
-  if (!line || /^["',\s]*$/.test(line)) {
-    console.warn(`⚠️ Skipping row ${i}: line is empty or contains only separators`);
-    continue;
-  }
-
-  console.log(`Processing row ${i}:`, line.substring(0, 100) + '...');
-
-  // Parse the line into values (handles quotes properly)
-  const values = parseCSVLine(line);
-  console.log(`Parsed values for row ${i}:`, values);
-
-  // Skip if all values are empty
-  if (values.every(v => !v || (typeof v === 'string' && v.trim() === ''))) {
-    console.warn(`⚠️ Skipping row ${i}: all values are empty`);
-    continue;
-  }
-
-  // Map values to Baserow fields
-  const mappedData: any = {};
-
-  headers.forEach((header, index) => {
-    const cleanHeader = header.trim().replace(/"/g, '');
-    const targetColumn = mappings[cleanHeader];
-
-    if (targetColumn && targetColumn !== 'ignore' && values[index] !== undefined) {
-      const fieldId = fieldMappings[targetColumn];
-      const value = typeof values[index] === 'string' ? values[index].trim() : values[index];
-
-      if (fieldId && value !== '') {
-        mappedData[`field_${fieldId}`] = value;
-      }
-    }
-  });
-
-  // Skip if mappedData is incomplete
-  if (Object.keys(mappedData).length !== mappedColumns.length) {
-    console.warn(`⚠️ Skipping row ${i}: Incomplete mapping`, mappedData);
-    continue;
-  }
-
-  console.log(`✅ Accepted row ${i}:`, mappedData);
-  recordsToCreate.push(mappedData);
-}
-
-
-    // Create records in batches for better performance with large files
-    console.log(`Creating ${recordsToCreate.length} records in table ${tableId}`);
-    
-    const BATCH_SIZE = 50; // Process in smaller batches for large files
-    
-    for (let i = 0; i < recordsToCreate.length; i += BATCH_SIZE) {
-      const batch = recordsToCreate.slice(i, i + BATCH_SIZE);
-      console.log(`Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(recordsToCreate.length / BATCH_SIZE)} (${batch.length} records)`);
-      
-      for (const recordData of batch) {
-        await createRecordInNewTable(tableId, recordData, jwtToken);
-        created++;
-        console.log(`Successfully created record ${created}/${recordsToCreate.length}`);
-        
-        // Smaller delay between records within batch
-        await new Promise(resolve => setTimeout(resolve, 75));
-      }
-      
-      // Longer delay between batches for stability
-      if (i + BATCH_SIZE < recordsToCreate.length) {
-        console.log('Waiting between batches for stability...');
-        await new Promise(resolve => setTimeout(resolve, 300));
-      }
+    if (isVeryLargeFile) {
+      console.log('Very large file detected - using optimized processing');
+      created = await processVeryLargeFileData(lines, headers, mappings, mappedColumns, fieldMappings, tableId, jwtToken);
+    } else {
+      created = await processStandardFileData(lines, headers, mappings, mappedColumns, fieldMappings, tableId, jwtToken);
     }
 
     // Verify records were actually created
@@ -693,6 +849,170 @@ for (let i = 1; i < lines.length; i++) {
     console.error('Error processing import data:', error);
     throw error;
   }
+};
+
+// Optimized processing for very large files
+const processVeryLargeFileData = async (
+  lines: string[], 
+  headers: string[], 
+  mappings: Record<string, string>, 
+  mappedColumns: string[], 
+  fieldMappings: Record<string, number>, 
+  tableId: string, 
+  jwtToken: string
+): Promise<number> => {
+  console.log('Processing very large file with optimized approach');
+  
+  let created = 0;
+  const LARGE_BATCH_SIZE = 25; // Smaller batches for very large files
+  const batchBuffer: any[] = [];
+  
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+
+    // Skip empty lines
+    if (!line || /^["',\s]*$/.test(line)) {
+      continue;
+    }
+
+    const values = parseCSVLine(line);
+    
+    // Skip if all values are empty
+    if (values.every(v => !v || (typeof v === 'string' && v.trim() === ''))) {
+      continue;
+    }
+
+    // Map values to Baserow fields
+    const mappedData: any = {};
+    let hasValidData = false;
+
+    headers.forEach((header, index) => {
+      const cleanHeader = header.trim().replace(/"/g, '');
+      const targetColumn = mappings[cleanHeader];
+
+      if (targetColumn && targetColumn !== 'ignore' && values[index] !== undefined) {
+        const fieldId = fieldMappings[targetColumn];
+        const value = typeof values[index] === 'string' ? values[index].trim() : values[index];
+
+        if (fieldId && value !== '') {
+          mappedData[`field_${fieldId}`] = value;
+          hasValidData = true;
+        }
+      }
+    });
+
+    if (hasValidData && Object.keys(mappedData).length > 0) {
+      batchBuffer.push(mappedData);
+    }
+
+    // Process batch when buffer is full
+    if (batchBuffer.length >= LARGE_BATCH_SIZE) {
+      const batchResults = await processBatchRecords(batchBuffer, tableId, jwtToken);
+      created += batchResults;
+      
+      console.log(`Processed batch: ${created} total records created (${((i / lines.length) * 100).toFixed(1)}% complete)`);
+      
+      // Clear buffer and add delay for stability
+      batchBuffer.length = 0;
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+  }
+
+  // Process remaining records in buffer
+  if (batchBuffer.length > 0) {
+    const batchResults = await processBatchRecords(batchBuffer, tableId, jwtToken);
+    created += batchResults;
+    console.log(`Processed final batch: ${created} total records created`);
+  }
+
+  return created;
+};
+
+// Standard processing for smaller files
+const processStandardFileData = async (
+  lines: string[], 
+  headers: string[], 
+  mappings: Record<string, string>, 
+  mappedColumns: string[], 
+  fieldMappings: Record<string, number>, 
+  tableId: string, 
+  jwtToken: string
+): Promise<number> => {
+  console.log('Processing with standard approach');
+  
+  const recordsToCreate = [];
+  
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+
+    if (!line || /^["',\s]*$/.test(line)) {
+      continue;
+    }
+
+    const values = parseCSVLine(line);
+    
+    if (values.every(v => !v || (typeof v === 'string' && v.trim() === ''))) {
+      continue;
+    }
+
+    const mappedData: any = {};
+
+    headers.forEach((header, index) => {
+      const cleanHeader = header.trim().replace(/"/g, '');
+      const targetColumn = mappings[cleanHeader];
+
+      if (targetColumn && targetColumn !== 'ignore' && values[index] !== undefined) {
+        const fieldId = fieldMappings[targetColumn];
+        const value = typeof values[index] === 'string' ? values[index].trim() : values[index];
+
+        if (fieldId && value !== '') {
+          mappedData[`field_${fieldId}`] = value;
+        }
+      }
+    });
+
+    if (Object.keys(mappedData).length > 0) {
+      recordsToCreate.push(mappedData);
+    }
+  }
+
+  // Create records in batches
+  const BATCH_SIZE = 50;
+  let created = 0;
+  
+  for (let i = 0; i < recordsToCreate.length; i += BATCH_SIZE) {
+    const batch = recordsToCreate.slice(i, i + BATCH_SIZE);
+    const batchResults = await processBatchRecords(batch, tableId, jwtToken);
+    created += batchResults;
+    
+    console.log(`Processed batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(recordsToCreate.length / BATCH_SIZE)}: ${created}/${recordsToCreate.length} records created`);
+    
+    if (i + BATCH_SIZE < recordsToCreate.length) {
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+  }
+
+  return created;
+};
+
+// Process a batch of records
+const processBatchRecords = async (batch: any[], tableId: string, jwtToken: string): Promise<number> => {
+  let successCount = 0;
+  
+  for (const recordData of batch) {
+    try {
+      await createRecordInNewTable(tableId, recordData, jwtToken);
+      successCount++;
+      
+      // Small delay between individual records
+      await new Promise(resolve => setTimeout(resolve, 50));
+    } catch (error) {
+      console.error('Failed to create record:', error);
+      // Continue with next record instead of failing entire batch
+    }
+  }
+  
+  return successCount;
 };
 
 // Get field mappings (column name to field ID) after table setup
@@ -742,22 +1062,61 @@ const getFieldMappings = async (tableId: string, columnNames: string[]): Promise
   }
 };
 
-// Helper function to properly parse CSV lines
+// Helper function to properly parse CSV lines with improved handling for large files
 const parseCSVLine = (line: string): string[] => {
-  const regex = /(".*?"|[^",\s]+)(?=\s*,|\s*$)/g;
-  const matches = [...line.matchAll(regex)].map(m => {
-    const value = m[0].trim();
-    return value.startsWith('"') && value.endsWith('"')
-      ? value.slice(1, -1)
-      : value;
-  });
-  return matches;
+  // Handle empty lines
+  if (!line || line.trim() === '') {
+    return [];
+  }
+  
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  let i = 0;
+  
+  while (i < line.length) {
+    const char = line[i];
+    const nextChar = line[i + 1];
+    
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        // Escaped quote
+        current += '"';
+        i += 2;
+        continue;
+      } else {
+        // Start or end of quoted field
+        inQuotes = !inQuotes;
+        i++;
+        continue;
+      }
+    }
+    
+    if (char === ',' && !inQuotes) {
+      // Field separator
+      result.push(current.trim());
+      current = '';
+      i++;
+      continue;
+    }
+    
+    // Regular character
+    current += char;
+    i++;
+  }
+  
+  // Add the last field
+  result.push(current.trim());
+  
+  return result;
 };
 
-// Create record in the new table
-const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken: string) => {
+// Create record in the new table with improved error handling
+const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken: string, retryCount = 0) => {
+  const MAX_RETRIES = 3;
+  
   try {
-    console.log('Creating record in table:', tableId, 'with data:', recordData);
+    console.log('Creating record in table:', tableId, 'with data keys:', Object.keys(recordData));
     
     const createResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${tableId}/`, {
       method: 'POST',
@@ -770,6 +1129,21 @@ const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken
     
     if (!createResponse.ok) {
       const errorText = await createResponse.text();
+      
+      // Handle rate limiting
+      if (createResponse.status === 429 && retryCount < MAX_RETRIES) {
+        console.warn(`Rate limited, retrying in ${(retryCount + 1) * 1000}ms...`);
+        await new Promise(resolve => setTimeout(resolve, (retryCount + 1) * 1000));
+        return await createRecordInNewTable(tableId, recordData, jwtToken, retryCount + 1);
+      }
+      
+      // Handle JWT token expiration
+      if (createResponse.status === 401 && retryCount < MAX_RETRIES) {
+        console.warn('JWT token expired, getting fresh token...');
+        const freshToken = await getJWTToken();
+        return await createRecordInNewTable(tableId, recordData, freshToken, retryCount + 1);
+      }
+      
       console.error('Failed to create record in new table:', errorText);
       console.error('Record data was:', recordData);
       console.error('Response status:', createResponse.status);
@@ -781,7 +1155,13 @@ const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken
     }
     
   } catch (error) {
-    console.error('Error creating record in new table:', error);
+    if (retryCount < MAX_RETRIES) {
+      console.warn(`Retrying record creation (attempt ${retryCount + 1}/${MAX_RETRIES})...`);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      return await createRecordInNewTable(tableId, recordData, jwtToken, retryCount + 1);
+    }
+    
+    console.error('Error creating record in new table after retries:', error);
     throw error;
   }
 };

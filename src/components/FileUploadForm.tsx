@@ -105,6 +105,8 @@ const FileUploadForm = () => {
     setIsSubmitting(true);
 
     try {
+      console.log('Starting upload process for file:', formData.file!.name, 'Size:', (formData.file!.size / 1024 / 1024).toFixed(2), 'MB');
+      
       // Store only basic file info instead of entire content
       sessionStorage.setItem('originalFile', JSON.stringify({
         name: formData.file!.name,
@@ -120,6 +122,8 @@ const FileUploadForm = () => {
         file: formData.file!,
       });
 
+      console.log('Upload completed successfully');
+
       toast({
         title: "Upload erfolgreich",
         description: "Ihre Daten wurden erfolgreich hochgeladen.",
@@ -130,9 +134,19 @@ const FileUploadForm = () => {
 
     } catch (error) {
       console.error('Upload error:', error);
+      
+      let errorMessage = "Beim Hochladen ist ein Fehler aufgetreten. Bitte versuchen Sie es erneut.";
+      
+      if (error instanceof Error) {
+        // Show the specific error message from the API
+        errorMessage = error.message;
+        console.error('Specific error:', error.message);
+        console.error('Error stack:', error.stack);
+      }
+      
       toast({
         title: "Fehler",
-        description: "Beim Hochladen ist ein Fehler aufgetreten. Bitte versuchen Sie es erneut.",
+        description: errorMessage,
         variant: "destructive",
       });
     } finally {
