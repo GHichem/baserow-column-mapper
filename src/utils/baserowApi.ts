@@ -1217,26 +1217,36 @@ const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken
   }
 };
 
+// Helper function to fetch all rows with pagination
+const fetchAllRows = async (tableId: string, jwtToken: string) => {
+  let allRows = [];
+  let next = `${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${tableId}/?limit=200&offset=0`;
+
+  while (next) {
+    const res = await fetch(next, {
+      headers: { Authorization: `JWT ${jwtToken}` }
+    });
+    
+    if (!res.ok) {
+      console.error('Failed to fetch rows:', res.status, res.statusText);
+      break;
+    }
+    
+    const data = await res.json();
+    allRows.push(...(data.results || []));
+    next = data.next; // Baserow provides the full next-page URL
+  }
+
+  return allRows;
+};
+
 // Helper function to verify records were created
 export const verifyRecordsCreated = async (tableId: string): Promise<any[]> => {
   try {
     const jwtToken = await getJWTToken();
-    
-    const response = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${tableId}/`, {
-      headers: {
-        'Authorization': `JWT ${jwtToken}`,
-      },
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Failed to fetch table rows:', errorText);
-      throw new Error(`Failed to fetch table rows: ${errorText}`);
-    }
-
-    const data = await response.json();
-    console.log(`Found ${data.results?.length || 0} rows in table ${tableId}:`, data.results);
-    return data.results || [];
+    const allRows = await fetchAllRows(tableId, jwtToken);
+    console.log(`Found ${allRows.length} rows in table ${tableId} (with pagination)`);
+    return allRows;
   } catch (error) {
     console.error('Error verifying records:', error);
     throw error;
