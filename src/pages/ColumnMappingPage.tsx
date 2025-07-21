@@ -8,6 +8,19 @@ import { Button } from '@/components/ui/button';
 import { AlertCircle, CheckCircle, FileSpreadsheet, ExternalLink } from 'lucide-react';
 import { processImportData } from '@/utils/baserowApi';
 
+interface ProgressInfo {
+  current: number;
+  total: number;
+  percentage: number;
+  remaining?: number;
+  speed?: number;
+  estimatedTimeRemaining?: number;
+  currentBatch?: number;
+  totalBatches?: number;
+  failed?: number;
+  processing?: 'bulk' | 'standard' | 'individual';
+}
+
 interface UploadedFileInfo {
   file: any;
   userData: {
@@ -70,13 +83,13 @@ const ColumnMappingPage = () => {
     }
   };
 
-  const handleMappingComplete = async (mappings: Record<string, string>) => {
+  const handleMappingComplete = async (mappings: Record<string, string>, progressCallback?: (progress: ProgressInfo) => void) => {
     try {
       console.log('Column mappings completed:', mappings);
       console.log('File info:', uploadedFileInfo);
       
       // Process the actual file data with mappings and create new table
-      const results = await processImportData(mappings);
+      const results = await processImportData(mappings, progressCallback);
       
       setImportResults({
         total: results.total,
@@ -183,14 +196,6 @@ const ColumnMappingPage = () => {
             </div>
             
             <div className="flex gap-4 justify-center">
-              <Button 
-                onClick={() => window.open(`https://baserow.app-inventor.org/database/59/table/${importResults.tableId}`, '_blank')}
-                variant="outline"
-                className="flex items-center gap-2"
-              >
-                <ExternalLink className="h-4 w-4" />
-                Tabelle in Baserow öffnen
-              </Button>
               <Button onClick={handleStartOver} className="bg-gradient-to-r from-blue-600 to-purple-600">
                 <FileSpreadsheet className="h-4 w-4 mr-2" />
                 Neue Datei hochladen

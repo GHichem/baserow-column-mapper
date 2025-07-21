@@ -8,10 +8,24 @@ import { useToast } from '@/hooks/use-toast';
 import { CheckCircle, AlertCircle, ArrowRight, FileSpreadsheet, Settings } from 'lucide-react';
 import { getTableSchema, parseFileHeaders } from '@/utils/baserowApi';
 import { smartMatch, calculateSimilarity } from '@/utils/stringMatching';
+import ImportProgressDialog from './ImportProgressDialog';
+
+interface ProgressInfo {
+  current: number;
+  total: number;
+  percentage: number;
+  remaining?: number;
+  speed?: number;
+  estimatedTimeRemaining?: number;
+  currentBatch?: number;
+  totalBatches?: number;
+  failed?: number;
+  processing?: 'bulk' | 'standard' | 'individual';
+}
 
 interface ColumnMappingProps {
   uploadedFile: File;
-  onMappingComplete: (mappings: Record<string, string>) => void;
+  onMappingComplete: (mappings: Record<string, string>, progressCallback?: (progress: ProgressInfo) => void) => void;
   onBack: () => void;
 }
 
@@ -29,6 +43,8 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
   const [mappings, setMappings] = useState<Record<string, ColumnMapping>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [showProgressDialog, setShowProgressDialog] = useState(false);
+  const [progressInfo, setProgressInfo] = useState<ProgressInfo | null>(null);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -151,11 +167,30 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
         return;
       }
       
+      // Progress callback function - show dialog when we have real file data
+      const progressCallback = (progress: ProgressInfo) => {
+        // Show dialog when we have meaningful total count (real file data)
+        if (progress.total > 100 || (progress.total > 0 && progress.currentBatch !== undefined)) {
+          setShowProgressDialog(true);
+        }
+        
+        setProgressInfo(progress);
+        
+        // Auto-hide dialog when completed
+        if (progress.percentage >= 100) {
+          setTimeout(() => {
+            setShowProgressDialog(false);
+            setProgressInfo(null);
+          }, 3000); // Show completion for 3 seconds
+        }
+      };
+      
       // Add progress tracking for the UI
-      await onMappingComplete(finalMappings);
+      await onMappingComplete(finalMappings, progressCallback);
       
     } catch (error) {
       console.error('Import error:', error);
+      setShowProgressDialog(false);
       toast({
         title: "Import-Fehler",
         description: "Ein Fehler ist beim Import aufgetreten. Bitte versuchen Sie es erneut.",
@@ -177,10 +212,28 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-purple-50 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-lg text-gray-600">Analysiere Spaltendaten...</p>
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-blue-900 flex items-center justify-center relative overflow-hidden">
+        {/* Animated background elements */}
+        <div className="absolute inset-0 overflow-hidden">
+          <div className="absolute -inset-10 opacity-30">
+            <div className="absolute top-1/4 left-1/4 w-72 h-72 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl animate-pulse"></div>
+            <div className="absolute top-1/3 right-1/4 w-72 h-72 bg-blue-500 rounded-full mix-blend-multiply filter blur-xl animate-pulse delay-700"></div>
+            <div className="absolute bottom-1/4 left-1/3 w-72 h-72 bg-cyan-500 rounded-full mix-blend-multiply filter blur-xl animate-pulse delay-1000"></div>
+          </div>
+        </div>
+        
+        <div className="text-center relative z-10">
+          <div className="relative mb-6">
+            <div className="animate-spin rounded-full h-16 w-16 border-4 border-transparent bg-gradient-to-r from-purple-400 via-pink-400 to-cyan-400 mx-auto"></div>
+            <div className="absolute inset-2 bg-slate-900 rounded-full"></div>
+            <div className="absolute inset-3 animate-spin rounded-full border-2 border-white border-t-transparent"></div>
+          </div>
+          <p className="text-xl text-white font-light tracking-wide">Analysiere Spaltendaten...</p>
+          <div className="mt-4 flex justify-center space-x-1">
+            <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce"></div>
+            <div className="w-2 h-2 bg-pink-400 rounded-full animate-bounce delay-100"></div>
+            <div className="w-2 h-2 bg-cyan-400 rounded-full animate-bounce delay-200"></div>
+          </div>
         </div>
       </div>
     );
@@ -189,63 +242,92 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
   const stats = getMappingStats();
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-purple-50 py-8">
-      <div className="max-w-6xl mx-auto px-4">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-blue-900 py-8 relative overflow-hidden">
+      {/* Animated background elements */}
+      <div className="absolute inset-0 overflow-hidden">
+        <div className="absolute -inset-10 opacity-20">
+          <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-purple-500 rounded-full mix-blend-multiply filter blur-3xl animate-pulse"></div>
+          <div className="absolute top-1/3 right-1/4 w-96 h-96 bg-blue-500 rounded-full mix-blend-multiply filter blur-3xl animate-pulse delay-700"></div>
+          <div className="absolute bottom-1/4 left-1/3 w-96 h-96 bg-cyan-500 rounded-full mix-blend-multiply filter blur-3xl animate-pulse delay-1000"></div>
+        </div>
+        
+        {/* Grid pattern overlay */}
+        <div className="absolute inset-0 opacity-10" style={{
+          backgroundImage: `
+            linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)
+          `,
+          backgroundSize: '50px 50px'
+        }}></div>
+      </div>
+
+      <div className="max-w-6xl mx-auto px-4 relative z-10">
         {/* Header */}
-        <div className="text-center mb-8">
-          <div className="flex items-center justify-center gap-2 mb-4">
-            <Settings className="h-8 w-8 text-blue-600" />
-            <h1 className="text-3xl font-bold text-gray-800">Spalten-Zuordnung</h1>
+        <div className="text-center mb-12">
+          <div className="flex items-center justify-center gap-3 mb-6">
+            <div className="p-3 rounded-2xl bg-gradient-to-r from-purple-600 to-cyan-600 shadow-lg shadow-purple-500/25">
+              <Settings className="h-8 w-8 text-white" />
+            </div>
+            <h1 className="text-4xl font-bold bg-gradient-to-r from-white via-purple-200 to-cyan-200 bg-clip-text text-transparent">
+              Spalten-Zuordnung
+            </h1>
           </div>
-          <p className="text-gray-600">
+          <p className="text-gray-300 text-lg max-w-2xl mx-auto leading-relaxed">
             Ordnen Sie die Spalten Ihrer Datei den Zielfeldern zu. Automatisch erkannte Zuordnungen sind grün markiert.
           </p>
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-          <Card>
-            <CardContent className="p-4 text-center">
-              <div className="text-2xl font-bold text-blue-600">{stats.total}</div>
-              <div className="text-sm text-gray-600">Gesamt</div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-12">
+          <Card className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border-slate-700/50 backdrop-blur-sm hover:scale-105 transition-all duration-300 shadow-xl shadow-slate-900/50">
+            <CardContent className="p-6 text-center">
+              <div className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">{stats.total}</div>
+              <div className="text-sm text-gray-400 font-medium mt-1">Gesamt</div>
             </CardContent>
           </Card>
-          <Card>
-            <CardContent className="p-4 text-center">
-              <div className="text-2xl font-bold text-green-600">{stats.matched}</div>
-              <div className="text-sm text-gray-600">Zugeordnet</div>
+          <Card className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border-slate-700/50 backdrop-blur-sm hover:scale-105 transition-all duration-300 shadow-xl shadow-slate-900/50">
+            <CardContent className="p-6 text-center">
+              <div className="text-3xl font-bold bg-gradient-to-r from-green-400 to-emerald-400 bg-clip-text text-transparent">{stats.matched}</div>
+              <div className="text-sm text-gray-400 font-medium mt-1">Zugeordnet</div>
             </CardContent>
           </Card>
-          <Card>
-            <CardContent className="p-4 text-center">
-              <div className="text-2xl font-bold text-orange-600">{stats.ignored}</div>
-              <div className="text-sm text-gray-600">Ignoriert</div>
+          <Card className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border-slate-700/50 backdrop-blur-sm hover:scale-105 transition-all duration-300 shadow-xl shadow-slate-900/50">
+            <CardContent className="p-6 text-center">
+              <div className="text-3xl font-bold bg-gradient-to-r from-orange-400 to-yellow-400 bg-clip-text text-transparent">{stats.ignored}</div>
+              <div className="text-sm text-gray-400 font-medium mt-1">Ignoriert</div>
             </CardContent>
           </Card>
-          <Card>
-            <CardContent className="p-4 text-center">
-              <div className="text-2xl font-bold text-red-600">{stats.unmapped}</div>
-              <div className="text-sm text-gray-600">Offen</div>
+          <Card className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border-slate-700/50 backdrop-blur-sm hover:scale-105 transition-all duration-300 shadow-xl shadow-slate-900/50">
+            <CardContent className="p-6 text-center">
+              <div className="text-3xl font-bold bg-gradient-to-r from-red-400 to-pink-400 bg-clip-text text-transparent">{stats.unmapped}</div>
+              <div className="text-sm text-gray-400 font-medium mt-1">Offen</div>
             </CardContent>
           </Card>
         </div>
 
         {/* File Info */}
-        <Card className="mb-8">
+        <Card className="mb-8 bg-gradient-to-r from-slate-800/80 to-slate-900/80 border-slate-700/50 backdrop-blur-sm shadow-xl shadow-slate-900/50 hover:shadow-purple-500/20 transition-all duration-500">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <FileSpreadsheet className="h-5 w-5" />
-              Datei: {uploadedFile.name}
+            <CardTitle className="flex items-center gap-3 text-white">
+              <div className="p-2 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600">
+                <FileSpreadsheet className="h-5 w-5 text-white" />
+              </div>
+              <span className="bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent">
+                Datei: {uploadedFile.name}
+              </span>
             </CardTitle>
           </CardHeader>
         </Card>
 
         {/* Column Mappings */}
-        <Card>
+        <Card className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border-slate-700/50 backdrop-blur-sm shadow-2xl shadow-slate-900/50">
           <CardHeader>
-            <CardTitle>Spalten-Zuordnungen</CardTitle>
+            <CardTitle className="text-2xl font-semibold bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent flex items-center gap-3">
+              <div className="h-1 w-8 bg-gradient-to-r from-purple-500 to-cyan-500 rounded-full"></div>
+              Spalten-Zuordnungen
+            </CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="p-6">
             <div className="space-y-4">
               {userColumns.map((userColumn, index) => {
                 const mapping = mappings[userColumn];
@@ -264,30 +346,40 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
                 return (
                   <div
                     key={index}
-                    className={`p-4 rounded-lg border-2 transition-all ${
+                    className={`group p-6 rounded-xl border-2 transition-all duration-500 hover:scale-[1.02] hover:shadow-lg ${
                       mapping.isMatched
-                        ? 'border-green-300 bg-green-50'
+                        ? 'border-green-400/50 bg-gradient-to-r from-green-900/30 to-emerald-900/30 shadow-green-500/20'
                         : mapping.isIgnored
-                        ? 'border-orange-300 bg-orange-50'
-                        : 'border-gray-300 bg-white'
+                        ? 'border-orange-400/50 bg-gradient-to-r from-orange-900/30 to-yellow-900/30 shadow-orange-500/20'
+                        : 'border-slate-600/50 bg-gradient-to-r from-slate-800/50 to-slate-700/50 shadow-slate-500/20'
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-4">
-                      <div className="flex items-center gap-3 flex-1">
+                    <div className="flex items-center justify-between gap-6">
+                      <div className="flex items-center gap-4 flex-1">
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <Badge variant="outline" className="font-mono text-sm">
+                          <div className="flex items-center gap-3">
+                            <Badge variant="outline" className={`font-mono text-sm px-3 py-1 font-medium ${
+                              mapping.isMatched 
+                                ? 'border-green-400/50 bg-green-500/20 text-green-300'
+                                : mapping.isIgnored
+                                ? 'border-orange-400/50 bg-orange-500/20 text-orange-300'
+                                : 'border-slate-400/50 bg-slate-500/20 text-slate-300'
+                            }`}>
                               {userColumn}
                             </Badge>
                             {mapping.isMatched && (
-                              <Badge variant="default" className="bg-green-100 text-green-800">
-                                {mapping.similarity}% Übereinstimmung
+                              <Badge className="bg-gradient-to-r from-green-600 to-emerald-600 text-white border-0 shadow-lg shadow-green-500/30 animate-pulse">
+                                {mapping.similarity}% Match
                               </Badge>
                             )}
                           </div>
                         </div>
                         
-                        <ArrowRight className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                        <div className="flex-shrink-0">
+                          <ArrowRight className={`h-5 w-5 transition-all duration-300 group-hover:translate-x-1 ${
+                            mapping.isMatched ? 'text-green-400' : 'text-gray-400'
+                          }`} />
+                        </div>
                         
                         <div className="min-w-0 flex-1">
                           <SearchableSelect
@@ -301,11 +393,14 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
                       
                       <div className="flex-shrink-0">
                         {mapping.isMatched ? (
-                          <CheckCircle className="h-5 w-5 text-green-600" />
+                          <div className="relative">
+                            <CheckCircle className="h-6 w-6 text-green-400" />
+                            <div className="absolute inset-0 rounded-full bg-green-400/20"></div>
+                          </div>
                         ) : mapping.isIgnored ? (
-                          <AlertCircle className="h-5 w-5 text-orange-600" />
+                          <AlertCircle className="h-6 w-6 text-orange-400" />
                         ) : (
-                          <AlertCircle className="h-5 w-5 text-red-600" />
+                          <AlertCircle className="h-6 w-6 text-red-400" />
                         )}
                       </div>
                     </div>
@@ -317,27 +412,39 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
         </Card>
 
         {/* Action Buttons */}
-        <div className="flex justify-between mt-8">
-          <Button variant="outline" onClick={onBack} disabled={isProcessing}>
+        <div className="flex justify-between mt-12">
+          <Button 
+            variant="outline" 
+            onClick={onBack} 
+            disabled={isProcessing}
+            className="px-8 py-3 bg-slate-800/80 border-slate-600 text-gray-300 hover:bg-slate-700/80 hover:border-slate-500 hover:text-white transition-all duration-300 backdrop-blur-sm shadow-lg shadow-slate-900/50"
+          >
             Zurück
           </Button>
           
           <Button
             onClick={handleImport}
             disabled={isProcessing || stats.unmapped > 0}
-            className="bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700"
+            className="px-8 py-3 bg-gradient-to-r from-green-600 via-emerald-600 to-cyan-600 hover:from-green-700 hover:via-emerald-700 hover:to-cyan-700 text-white border-0 shadow-xl shadow-green-500/30 hover:shadow-green-500/50 hover:scale-105 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
           >
             {isProcessing ? (
               <>
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                Importiere...
+                <div className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent mr-3"></div>
+                <span className="font-medium">Importiere...</span>
               </>
             ) : (
-              'Import starten'
+              <span className="font-medium">Import starten</span>
             )}
           </Button>
         </div>
       </div>
+
+      {/* Progress Dialog */}
+      <ImportProgressDialog
+        open={showProgressDialog}
+        progress={progressInfo}
+        tableName={uploadedFile.name.replace(/\.[^/.]+$/, "")} // Remove file extension for table name
+      />
     </div>
   );
 };

@@ -166,14 +166,16 @@ const FileUploadForm = () => {
     <form onSubmit={handleSubmit} className="space-y-6">
       {/* Personal Information Section */}
       <div className="space-y-4">
-        <div className="flex items-center gap-2 mb-4">
-          <User className="h-5 w-5 text-blue-600" />
-          <h3 className="text-lg font-semibold text-gray-800">Persönliche Daten</h3>
+        <div className="flex items-center gap-3 mb-4">
+          <div className="p-2 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600">
+            <User className="h-5 w-5 text-white" />
+          </div>
+          <h3 className="text-lg font-semibold bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent">Persönliche Daten</h3>
         </div>
         
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-2">
-            <Label htmlFor="vorname" className="text-sm font-medium text-gray-700">
+            <Label htmlFor="vorname" className="text-sm font-medium text-gray-300">
               Vorname *
             </Label>
             <Input
@@ -183,13 +185,13 @@ const FileUploadForm = () => {
               value={formData.vorname}
               onChange={handleInputChange}
               placeholder="Max"
-              className="border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+              className="bg-slate-700/50 border-slate-600 text-white placeholder:text-gray-400 focus:border-purple-500 focus:ring-purple-500/30 backdrop-blur-sm"
               required
             />
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="nachname" className="text-sm font-medium text-gray-700">
+            <Label htmlFor="nachname" className="text-sm font-medium text-gray-300">
               Nachname *
             </Label>
             <Input
@@ -199,14 +201,14 @@ const FileUploadForm = () => {
               value={formData.nachname}
               onChange={handleInputChange}
               placeholder="Mustermann"
-              className="border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+              className="bg-slate-700/50 border-slate-600 text-white placeholder:text-gray-400 focus:border-purple-500 focus:ring-purple-500/30 backdrop-blur-sm"
               required
             />
           </div>
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="email" className="text-sm font-medium text-gray-700">
+          <Label htmlFor="email" className="text-sm font-medium text-gray-300">
             E-Mail *
           </Label>
           <Input
@@ -216,7 +218,7 @@ const FileUploadForm = () => {
             value={formData.email}
             onChange={handleInputChange}
             placeholder="max@example.com"
-            className="border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+            className="bg-slate-700/50 border-slate-600 text-white placeholder:text-gray-400 focus:border-purple-500 focus:ring-purple-500/30 backdrop-blur-sm"
             required
           />
         </div>
@@ -224,13 +226,15 @@ const FileUploadForm = () => {
 
       {/* Company Information Section */}
       <div className="space-y-4">
-        <div className="flex items-center gap-2 mb-4">
-          <Building className="h-5 w-5 text-blue-600" />
-          <h3 className="text-lg font-semibold text-gray-800">Unternehmen</h3>
+        <div className="flex items-center gap-3 mb-4">
+          <div className="p-2 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600">
+            <Building className="h-5 w-5 text-white" />
+          </div>
+          <h3 className="text-lg font-semibold bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent">Unternehmen</h3>
         </div>
         
         <div className="space-y-2">
-          <Label htmlFor="company" className="text-sm font-medium text-gray-700">
+          <Label htmlFor="company" className="text-sm font-medium text-gray-300">
             Firmenname *
           </Label>
           <Input
@@ -240,7 +244,7 @@ const FileUploadForm = () => {
             value={formData.company}
             onChange={handleInputChange}
             placeholder="Muster GmbH"
-            className="border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+            className="bg-slate-700/50 border-slate-600 text-white placeholder:text-gray-400 focus:border-purple-500 focus:ring-purple-500/30 backdrop-blur-sm"
             required
           />
         </div>
@@ -248,9 +252,11 @@ const FileUploadForm = () => {
 
       {/* File Upload Section */}
       <div className="space-y-4">
-        <div className="flex items-center gap-2 mb-4">
-          <FileUp className="h-5 w-5 text-blue-600" />
-          <h3 className="text-lg font-semibold text-gray-800">Datei Upload</h3>
+        <div className="flex items-center gap-3 mb-4">
+          <div className="p-2 rounded-lg bg-gradient-to-r from-green-600 to-emerald-600">
+            <FileUp className="h-5 w-5 text-white" />
+          </div>
+          <h3 className="text-lg font-semibold bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent">Datei Upload</h3>
         </div>
         
         <FileUpload
@@ -260,19 +266,19 @@ const FileUploadForm = () => {
       </div>
 
       {/* Submit Button */}
-      <div className="pt-6 border-t border-gray-200">
+      <div className="pt-6 border-t border-slate-700/50">
         <Button
           type="submit"
           disabled={isSubmitting}
-          className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white py-3 text-lg font-medium transition-all duration-200 transform hover:scale-[1.02]"
+          className="w-full bg-gradient-to-r from-purple-600 via-pink-600 to-cyan-600 hover:from-purple-700 hover:via-pink-700 hover:to-cyan-700 text-white py-3 text-lg font-medium transition-all duration-300 transform hover:scale-[1.02] shadow-xl shadow-purple-500/30 hover:shadow-purple-500/50 border-0 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
         >
           {isSubmitting ? (
             <>
-              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
-              Wird hochgeladen...
+              <div className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent mr-3"></div>
+              <span className="font-medium">Wird hochgeladen...</span>
             </>
           ) : (
-            'Daten speichern'
+            <span className="font-medium">Daten speichern</span>
           )}
         </Button>
       </div>

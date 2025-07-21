@@ -97,12 +97,12 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, selectedFile }) =
     <div className="space-y-4">
       <div
         className={`
-          border-2 border-dashed rounded-xl p-8 text-center transition-all duration-200
+          border-2 border-dashed rounded-xl p-8 text-center transition-all duration-300 backdrop-blur-sm
           ${isDragOver 
-            ? 'border-blue-500 bg-blue-50' 
-            : 'border-gray-300 hover:border-gray-400'
+            ? 'border-purple-500/70 bg-purple-500/10 shadow-lg shadow-purple-500/20' 
+            : 'border-slate-600/50 hover:border-slate-500/70'
           }
-          ${selectedFile ? 'bg-green-50 border-green-300' : 'bg-gray-50'}
+          ${selectedFile ? 'bg-green-500/10 border-green-500/50 shadow-lg shadow-green-500/20' : 'bg-slate-700/30'}
         `}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -119,14 +119,17 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, selectedFile }) =
         {selectedFile ? (
           <div className="space-y-4">
             <div className="flex items-center justify-center">
-              <CheckCircle className="h-12 w-12 text-green-500" />
+              <div className="relative">
+                <CheckCircle className="h-12 w-12 text-green-400" />
+                <div className="absolute inset-0 rounded-full bg-green-400/20 animate-pulse"></div>
+              </div>
             </div>
             <div className="space-y-2">
-              <p className="text-green-700 font-medium">Datei ausgewählt</p>
-              <div className="flex items-center justify-center gap-2 text-sm text-gray-600">
+              <p className="text-green-300 font-medium text-lg">Datei ausgewählt</p>
+              <div className="flex items-center justify-center gap-2 text-sm text-gray-300">
                 <File className="h-4 w-4" />
                 <span>{selectedFile.name}</span>
-                <span>({formatFileSize(selectedFile.size)})</span>
+                <span className="text-gray-400">({formatFileSize(selectedFile.size)})</span>
               </div>
             </div>
             <Button
@@ -134,7 +137,7 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, selectedFile }) =
               variant="outline"
               size="sm"
               onClick={removeFile}
-              className="text-red-600 hover:text-red-700 border-red-300 hover:border-red-400"
+              className="text-red-300 hover:text-red-200 border-red-500/50 hover:border-red-400/70 bg-red-500/10 hover:bg-red-500/20 backdrop-blur-sm transition-all duration-300"
             >
               <X className="h-4 w-4 mr-1" />
               Entfernen
@@ -146,10 +149,10 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, selectedFile }) =
               <Upload className="h-12 w-12 text-gray-400" />
             </div>
             <div className="space-y-2">
-              <p className="text-lg font-medium text-gray-700">
+              <p className="text-lg font-medium text-gray-200">
                 Datei hier hinziehen oder klicken zum Auswählen
               </p>
-              <p className="text-sm text-gray-500">
+              <p className="text-sm text-gray-400">
                 Unterstützte Formate: .csv, .xls, .xlsx
               </p>
             </div>
@@ -157,7 +160,7 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, selectedFile }) =
               type="button"
               variant="outline"
               onClick={handleButtonClick}
-              className="border-blue-300 text-blue-600 hover:bg-blue-50 hover:border-blue-400"
+              className="border-purple-500/50 text-purple-300 hover:text-purple-200 hover:bg-purple-500/20 hover:border-purple-400/70 bg-purple-500/10 backdrop-blur-sm transition-all duration-300 shadow-lg shadow-purple-500/20 hover:shadow-purple-500/30"
             >
               <Upload className="h-4 w-4 mr-2" />
               Datei auswählen
