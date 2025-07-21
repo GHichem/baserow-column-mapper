@@ -1,73 +1,142 @@
-# Welcome to your Lovable project
+# CSV Import Application
 
-## Project info
+A secure and robust React application for uploading and importing CSV files to Baserow.
 
-**URL**: https://lovable.dev/projects/e8445898-cb07-42da-a923-633b84ae16c0
+## 🔒 Security Features
 
-## How can I edit this code?
+- Environment variable configuration for sensitive data
+- JWT token authentication with automatic refresh
+- Safe field mapping validation
+- Protected against missing/undefined field errors
 
-There are several ways of editing your application.
+## 🚀 Recent Improvements
 
-**Use Lovable**
+### Security Enhancements
+- **Environment Variables**: Sensitive tokens now loaded from environment variables
+- **Safe Field Access**: Added safety checks for undefined/missing fields
+- **Validation**: Warns about missing field mappings during column mapping
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/e8445898-cb07-42da-a923-633b84ae16c0) and start prompting.
+### Large File Support
+- **No Row Limits**: Removed artificial 999-row limit for large files
+- **Progress Tracking**: Added progress callbacks for UI feedback
+- **Streaming Support**: UTF-8 explicit decoding for better file handling
+- **Memory Optimization**: Improved chunk processing for very large files
 
-Changes made via Lovable will be committed automatically to this repo.
+### Stability Improvements
+- **Better Error Handling**: Enhanced error messages and recovery
+- **Retry Logic**: Automatic retry for failed operations
+- **Rate Limiting**: Handles API rate limits gracefully
 
-**Use your preferred IDE**
+## 🛠 Setup
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+### Environment Configuration
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+Create a `.env.local` file in your project root:
 
-Follow these steps:
+```env
+# Baserow Configuration
+VITE_BASEROW_API_TOKEN=your_api_token_here
+VITE_BASEROW_USERNAME=your_username_here
+VITE_BASEROW_PASSWORD=your_password_here
+VITE_BASEROW_JWT_TOKEN=your_jwt_token_here  # Optional
+```
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+**Security Note**: Never commit actual credentials to version control. Use the `.env.example` file as a template.
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+### Installation
 
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+```bash
+npm install
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+## 📁 Project Structure
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+```
+src/
+├── components/
+│   ├── FileUpload.tsx          # File upload component
+│   ├── ColumnMapping.tsx       # Column mapping interface
+│   └── ui/                     # Reusable UI components
+├── utils/
+│   ├── baserowApi.ts          # Baserow API integration
+│   └── stringMatching.ts     # Smart column matching
+└── pages/
+    └── Index.tsx              # Main application page
+```
 
-**Use GitHub Codespaces**
+## 🔧 Key Features
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+### File Upload
+- Drag & drop support
+- File validation (CSV, XLS, XLSX)
+- Large file handling (no size limits)
+- Progress tracking
 
-## What technologies are used for this project?
+### Column Mapping
+- Smart automatic matching
+- Manual column assignment
+- Similarity scoring
+- Ignore unused columns
 
-This project is built with:
+### Data Processing
+- Batch processing for performance
+- Memory-efficient streaming
+- Error recovery and retry logic
+- Progress feedback
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+## 📊 Performance
 
-## How can I deploy this project?
+- **Small Files (<50MB)**: Standard chunk processing
+- **Large Files (50-100MB)**: Streaming approach
+- **Very Large Files (>100MB)**: Optimized limited processing
+- **Batch Size**: Dynamic based on file size
 
-Simply open [Lovable](https://lovable.dev/projects/e8445898-cb07-42da-a923-633b84ae16c0) and click on Share -> Publish.
+## 🐛 Troubleshooting
 
-## Can I connect a custom domain to my Lovable project?
+### Common Issues
 
-Yes, you can!
+1. **Environment Variables Not Loading**
+   - Ensure `.env.local` exists in project root
+   - Restart development server after adding variables
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+2. **Large File Upload Fails**
+   - Check network timeout settings
+   - Verify file is not corrupted
+   - Ensure sufficient memory available
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/tips-tricks/custom-domain#step-by-step-guide)
+3. **Column Mapping Errors**
+   - Verify target table schema matches expected columns
+   - Check for special characters in column names
+
+### Debug Mode
+
+Enable detailed logging by checking browser console. All operations are logged with timestamps and progress indicators.
+
+## 🔄 API Integration
+
+The application integrates with Baserow using:
+- REST API for data operations
+- JWT authentication for secure access
+- Automatic token refresh
+- Rate limiting compliance
+
+## 📈 Future Enhancements
+
+- [ ] Excel file format support
+- [ ] Data validation rules
+- [ ] Custom field types mapping
+- [ ] Bulk update operations
+- [ ] Export functionality
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request
+
+## 📄 License
+
+This project is licensed under the MIT License.

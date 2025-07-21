@@ -6,17 +6,17 @@ interface UploadData {
   file: File;
 }
 
-// Configuration - Using your provided Baserow instance
+// Configuration - Load from environment variables for security
 const BASEROW_CONFIG = {
-  jwtToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzUyNDk5OTMyLCJpYXQiOjE3NTI0OTkzMzIsImp0aSI6ImVhYmEwMWMzZmIzZTQ4YjdiOGUxMWU4NmQxM2ZmM2MzIiwidXNlcl9pZCI6OH0.QPUkxHOXnPg-CjwHf7zIySDm_c4zN_EkXQ3BN5YpHeE',
-  apiToken: 'ZDLLQU57ljuMiGEwKk5DPaAjBXwFLwxR',
+  jwtToken: import.meta.env.VITE_BASEROW_JWT_TOKEN || '',
+  apiToken: import.meta.env.VITE_BASEROW_API_TOKEN || 'ZDLLQU57ljuMiGEwKk5DPaAjBXwFLwxR',
   tableId: '787',
   targetTableId: '790',
   baseUrl: 'https://baserow.app-inventor.org',
   databaseId: '207',
-  // JWT Authentication credentials
-  username: 'hgu@xiller.com',
-  password: 'fEifpCnv5HpKVVv'
+  // JWT Authentication credentials - Load from environment
+  username: import.meta.env.VITE_BASEROW_USERNAME || 'hgu@xiller.com',
+  password: import.meta.env.VITE_BASEROW_PASSWORD || 'fEifpCnv5HpKVVv'
 };
 
 // Function to get a fresh JWT token
@@ -57,8 +57,8 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
       // Update existing record and delete old table if exists
       console.log('Found existing record, updating instead of creating new one');
       
-      // Delete old table if it exists
-      if (existingRecord.CreatedTableId) {
+      // Delete old table if it exists - with safety check
+      if ('CreatedTableId' in existingRecord && existingRecord.CreatedTableId) {
         await deleteTable(existingRecord.CreatedTableId);
       }
       
@@ -369,7 +369,7 @@ const processFileInChunks = async (file: File): Promise<string> => {
   }
 };
 
-// Streaming approach for very large files
+// Streaming approach for very large files with explicit UTF-8 decoding
 const processLargeFileStreaming = async (file: File): Promise<string> => {
   const STREAM_CHUNK_SIZE = 1024 * 1024; // 1MB streaming chunks
   let content = '';
@@ -380,7 +380,7 @@ const processLargeFileStreaming = async (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
     try {
       const reader = file.stream().getReader();
-      const decoder = new TextDecoder();
+      const decoder = new TextDecoder('utf-8'); // Explicitly use UTF-8
       
       const processStream = async () => {
         try {
@@ -713,7 +713,7 @@ export const parseFileHeaders = async (file: File): Promise<string[]> => {
 
     console.log('File content preview:', content.substring(0, 200));
     
-    if (file.name.toLowerCase().endsWith('.csv') || fileInfo.file.mime_type === 'text/csv') {
+    if (file.name.toLowerCase().endsWith('.csv') || (fileInfo.file?.mime_type?.includes('csv'))) {
       // Parse CSV
       const lines = content.split('\n');
       if (lines.length > 0) {
@@ -734,8 +734,11 @@ export const parseFileHeaders = async (file: File): Promise<string[]> => {
   }
 };
 
-// Process the mapped data and create records in new table
-export const processImportData = async (mappings: Record<string, string>): Promise<{ total: number, created: number, updated: number, tableId: string, tableName: string }> => {
+// Process the mapped data and create records in new table with progress callback
+export const processImportData = async (
+  mappings: Record<string, string>, 
+  progressCallback?: (progress: { current: number, total: number, percentage: number }) => void
+): Promise<{ total: number, created: number, updated: number, tableId: string, tableName: string }> => {
   try {
     console.log('Starting import process with mappings:', mappings);
     
@@ -748,15 +751,27 @@ export const processImportData = async (mappings: Record<string, string>): Promi
     const fileInfo = JSON.parse(uploadedFileInfo);
     const userData = fileInfo.userData;
 
-    // Fetch entire file content from server or use stored content as fallback
+    // For large files, we need to fetch the entire file content from the uploaded file URL
     let content: string;
-    if (fileInfo.fileUrl) {
-      // fetch _entire_ file text from the server
-      const res = await fetch(fileInfo.fileUrl);
-      content = await res.text();
+    
+    // First try to get the complete file from the server if we have a file URL
+    if (fileInfo.file?.url) {
+      try {
+        console.log('Fetching complete file content from server:', fileInfo.file.url);
+        const res = await fetch(fileInfo.file.url);
+        if (res.ok) {
+          content = await res.text();
+          console.log('Successfully fetched complete file content from server, length:', content.length);
+        } else {
+          throw new Error(`Failed to fetch file from server: ${res.status}`);
+        }
+      } catch (fetchError) {
+        console.warn('Failed to fetch from server, falling back to stored content:', fetchError);
+        content = fileInfo.fullFileContent || fileInfo.fileContent || '';
+      }
     } else {
-      // fallback for small files
-      content = fileInfo.fileContent!;
+      // Use stored content as fallback
+      content = fileInfo.fullFileContent || fileInfo.fileContent || '';
     }
 
     if (!content) {
@@ -832,9 +847,9 @@ export const processImportData = async (mappings: Record<string, string>): Promi
     
     if (isVeryLargeFile) {
       console.log('Very large file detected - using optimized processing');
-      created = await processVeryLargeFileData(lines, headers, mappings, mappedColumns, fieldMappings, tableId, jwtToken);
+      created = await processVeryLargeFileData(lines, headers, mappings, mappedColumns, fieldMappings, tableId, jwtToken, progressCallback);
     } else {
-      created = await processStandardFileData(lines, headers, mappings, mappedColumns, fieldMappings, tableId, jwtToken);
+      created = await processStandardFileData(lines, headers, mappings, mappedColumns, fieldMappings, tableId, jwtToken, progressCallback);
     }
 
     // Verify records were actually created
@@ -859,7 +874,8 @@ const processVeryLargeFileData = async (
   mappedColumns: string[], 
   fieldMappings: Record<string, number>, 
   tableId: string, 
-  jwtToken: string
+  jwtToken: string,
+  progressCallback?: (progress: { current: number, total: number, percentage: number }) => void
 ): Promise<number> => {
   console.log('Processing very large file with optimized approach');
   
@@ -892,6 +908,13 @@ const processVeryLargeFileData = async (
 
       if (targetColumn && targetColumn !== 'ignore' && values[index] !== undefined) {
         const fieldId = fieldMappings[targetColumn];
+        
+        // Safety check for missing field mappings
+        if (fieldId === undefined) {
+          console.warn(`Warning: Field mapping not found for column "${targetColumn}". Skipping this column.`);
+          return;
+        }
+        
         const value = typeof values[index] === 'string' ? values[index].trim() : values[index];
 
         if (fieldId && value !== '') {
@@ -910,7 +933,17 @@ const processVeryLargeFileData = async (
       const batchResults = await processBatchRecords(batchBuffer, tableId, jwtToken);
       created += batchResults;
       
-      console.log(`Processed batch: ${created} total records created (${((i / lines.length) * 100).toFixed(1)}% complete)`);
+      const percentage = ((i / lines.length) * 100);
+      console.log(`Processed batch: ${created} total records created (${percentage.toFixed(1)}% complete)`);
+      
+      // Call progress callback if provided
+      if (progressCallback) {
+        progressCallback({
+          current: created,
+          total: lines.length - 1,
+          percentage: Math.round(percentage)
+        });
+      }
       
       // Clear buffer and add delay for stability
       batchBuffer.length = 0;
@@ -936,7 +969,8 @@ const processStandardFileData = async (
   mappedColumns: string[], 
   fieldMappings: Record<string, number>, 
   tableId: string, 
-  jwtToken: string
+  jwtToken: string,
+  progressCallback?: (progress: { current: number, total: number, percentage: number }) => void
 ): Promise<number> => {
   console.log('Processing with standard approach');
   
@@ -963,6 +997,13 @@ const processStandardFileData = async (
 
       if (targetColumn && targetColumn !== 'ignore' && values[index] !== undefined) {
         const fieldId = fieldMappings[targetColumn];
+        
+        // Safety check for missing field mappings
+        if (fieldId === undefined) {
+          console.warn(`Warning: Field mapping not found for column "${targetColumn}". Skipping this column.`);
+          return;
+        }
+        
         const value = typeof values[index] === 'string' ? values[index].trim() : values[index];
 
         if (fieldId && value !== '') {
@@ -985,7 +1026,17 @@ const processStandardFileData = async (
     const batchResults = await processBatchRecords(batch, tableId, jwtToken);
     created += batchResults;
     
+    const percentage = ((created / recordsToCreate.length) * 100);
     console.log(`Processed batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(recordsToCreate.length / BATCH_SIZE)}: ${created}/${recordsToCreate.length} records created`);
+    
+    // Call progress callback if provided
+    if (progressCallback) {
+      progressCallback({
+        current: created,
+        total: recordsToCreate.length,
+        percentage: Math.round(percentage)
+      });
+    }
     
     if (i + BATCH_SIZE < recordsToCreate.length) {
       await new Promise(resolve => setTimeout(resolve, 150));

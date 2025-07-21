@@ -151,6 +151,7 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
         return;
       }
       
+      // Add progress tracking for the UI
       await onMappingComplete(finalMappings);
       
     } catch (error) {
