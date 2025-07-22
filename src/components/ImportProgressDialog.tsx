@@ -105,49 +105,45 @@ const ImportProgressDialog: React.FC<ImportProgressDialogProps> = ({
           {/* Stats Grid */}
           <div className="grid grid-cols-2 gap-4">
             {/* Speed & Time */}
-            <Card className="bg-gradient-to-br from-slate-700/50 to-slate-800/50 border-slate-600/50 backdrop-blur-sm">
-              <CardContent className="p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <TrendingUp className="h-4 w-4 text-cyan-400" />
-                  <span className="text-sm font-medium text-gray-300">Geschwindigkeit</span>
-                </div>
-                <div className="space-y-1">
-                  {progress.speed !== undefined && (
-                    <div className="text-lg font-bold bg-gradient-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent">
-                      {progress.speed.toLocaleString()} /s
-                    </div>
-                  )}
-                  {progress.estimatedTimeRemaining !== undefined && progress.estimatedTimeRemaining > 0 && (
-                    <div className="text-xs text-gray-500">
-                      ~{formatTime(progress.estimatedTimeRemaining)} verbleibend
-                    </div>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
+            <div className="bg-gradient-to-br from-purple-500/20 to-cyan-500/20 border border-purple-500/30 rounded-lg p-4 backdrop-blur-sm">
+              <div className="flex items-center gap-2 mb-2">
+                <TrendingUp className="h-4 w-4 text-cyan-400" />
+                <span className="text-sm font-medium text-gray-300">Geschwindigkeit</span>
+              </div>
+              <div className="space-y-1">
+                {progress.speed !== undefined && (
+                  <div className="text-lg font-bold bg-gradient-to-r from-cyan-400 to-blue-400 bg-clip-text text-transparent">
+                    {progress.speed.toLocaleString()} /s
+                  </div>
+                )}
+                {progress.estimatedTimeRemaining !== undefined && progress.estimatedTimeRemaining > 0 && (
+                  <div className="text-xs text-gray-500">
+                    ~{formatTime(progress.estimatedTimeRemaining)} verbleibend
+                  </div>
+                )}
+              </div>
+            </div>
 
             {/* Processing Mode */}
-            <Card className="bg-gradient-to-br from-slate-700/50 to-slate-800/50 border-slate-600/50 backdrop-blur-sm">
-              <CardContent className="p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <ProcessingIcon className={`h-4 w-4 text-purple-400`} />
-                  <span className="text-sm font-medium text-gray-300">Modus</span>
-                </div>
-                <div className="space-y-1">
-                  <Badge 
-                    variant="secondary" 
-                    className="bg-purple-500/20 text-purple-300 border-purple-500/50 text-xs"
-                  >
-                    {getProcessingModeInfo(progress.processing).label}
-                  </Badge>
-                  {progress.currentBatch !== undefined && progress.totalBatches !== undefined && (
-                    <div className="text-xs text-gray-500">
-                      Batch {progress.currentBatch} von {progress.totalBatches}
-                    </div>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
+            <div className="bg-gradient-to-br from-purple-500/20 to-pink-500/20 border border-purple-500/30 rounded-lg p-4 backdrop-blur-sm">
+              <div className="flex items-center gap-2 mb-2">
+                <ProcessingIcon className={`h-4 w-4 text-purple-400`} />
+                <span className="text-sm font-medium text-gray-300">Modus</span>
+              </div>
+              <div className="space-y-1">
+                <Badge 
+                  variant="secondary" 
+                  className="bg-purple-500/20 text-purple-300 border-purple-500/50 text-xs"
+                >
+                  {getProcessingModeInfo(progress.processing).label}
+                </Badge>
+                {progress.currentBatch !== undefined && progress.totalBatches !== undefined && (
+                  <div className="text-xs text-gray-500">
+                    Batch {progress.currentBatch} von {progress.totalBatches}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
           {/* Additional Info */}

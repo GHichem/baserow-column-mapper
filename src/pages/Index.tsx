@@ -3,7 +3,7 @@ import FileUploadForm from '@/components/FileUploadForm';
 
 const Index = () => {
   return (
-    <div className="min-h-screen flex flex-col bg-gradient-to-br from-slate-900 via-purple-900 to-blue-900 relative overflow-hidden">
+    <div className="h-screen flex flex-col bg-gradient-to-br from-slate-900 via-purple-900 to-blue-900 relative overflow-hidden">
       {/* Animated background elements */}
       <div className="absolute inset-0 overflow-hidden">
         <div className="absolute -inset-10 opacity-20">
