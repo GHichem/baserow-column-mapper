@@ -105,8 +105,6 @@ const FileUploadForm = () => {
     setIsSubmitting(true);
 
     try {
-      console.log('Starting upload process for file:', formData.file!.name, 'Size:', (formData.file!.size / 1024 / 1024).toFixed(2), 'MB');
-      
       // Store only basic file info instead of entire content
       sessionStorage.setItem('originalFile', JSON.stringify({
         name: formData.file!.name,
@@ -163,19 +161,19 @@ const FileUploadForm = () => {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6">
+    <form onSubmit={handleSubmit} className="space-y-4">
       {/* Personal Information Section */}
-      <div className="space-y-4">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="p-2 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600">
-            <User className="h-5 w-5 text-white" />
+      <div className="space-y-3">
+        <div className="flex items-center gap-2 mb-3">
+          <div className="p-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600">
+            <User className="h-4 w-4 text-white" />
           </div>
-          <h3 className="text-lg font-semibold bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent">Persönliche Daten</h3>
+          <h3 className="text-base font-semibold bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent">Persönliche Daten</h3>
         </div>
         
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <Label htmlFor="vorname" className="text-sm font-medium text-gray-300">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="vorname" className="text-xs font-medium text-gray-300">
               Vorname *
             </Label>
             <Input
@@ -190,8 +188,8 @@ const FileUploadForm = () => {
             />
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="nachname" className="text-sm font-medium text-gray-300">
+          <div className="space-y-1.5">
+            <Label htmlFor="nachname" className="text-xs font-medium text-gray-300">
               Nachname *
             </Label>
             <Input
@@ -207,8 +205,8 @@ const FileUploadForm = () => {
           </div>
         </div>
 
-        <div className="space-y-2">
-          <Label htmlFor="email" className="text-sm font-medium text-gray-300">
+        <div className="space-y-1.5">
+          <Label htmlFor="email" className="text-xs font-medium text-gray-300">
             E-Mail *
           </Label>
           <Input
@@ -225,16 +223,16 @@ const FileUploadForm = () => {
       </div>
 
       {/* Company Information Section */}
-      <div className="space-y-4">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="p-2 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600">
-            <Building className="h-5 w-5 text-white" />
+      <div className="space-y-3">
+        <div className="flex items-center gap-2 mb-3">
+          <div className="p-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600">
+            <Building className="h-4 w-4 text-white" />
           </div>
-          <h3 className="text-lg font-semibold bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent">Unternehmen</h3>
+          <h3 className="text-base font-semibold bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent">Unternehmen</h3>
         </div>
         
-        <div className="space-y-2">
-          <Label htmlFor="company" className="text-sm font-medium text-gray-300">
+        <div className="space-y-1.5">
+          <Label htmlFor="company" className="text-xs font-medium text-gray-300">
             Firmenname *
           </Label>
           <Input
@@ -251,12 +249,12 @@ const FileUploadForm = () => {
       </div>
 
       {/* File Upload Section */}
-      <div className="space-y-4">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="p-2 rounded-lg bg-gradient-to-r from-green-600 to-emerald-600">
-            <FileUp className="h-5 w-5 text-white" />
+      <div className="space-y-3">
+        <div className="flex items-center gap-2 mb-3">
+          <div className="p-1.5 rounded-lg bg-gradient-to-r from-green-600 to-emerald-600">
+            <FileUp className="h-4 w-4 text-white" />
           </div>
-          <h3 className="text-lg font-semibold bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent">Datei Upload</h3>
+          <h3 className="text-base font-semibold bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent">Datei Upload</h3>
         </div>
         
         <FileUpload
@@ -266,11 +264,11 @@ const FileUploadForm = () => {
       </div>
 
       {/* Submit Button */}
-      <div className="pt-6 border-t border-slate-700/50">
+      <div className="pt-4 border-t border-slate-700/50">
         <Button
           type="submit"
           disabled={isSubmitting}
-          className="w-full bg-gradient-to-r from-purple-600 via-pink-600 to-cyan-600 hover:from-purple-700 hover:via-pink-700 hover:to-cyan-700 text-white py-3 text-lg font-medium transition-all duration-300 transform hover:scale-[1.02] shadow-xl shadow-purple-500/30 hover:shadow-purple-500/50 border-0 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+          className="w-full bg-gradient-to-r from-purple-600 via-pink-600 to-cyan-600 hover:from-purple-700 hover:via-pink-700 hover:to-cyan-700 text-white py-2.5 text-base font-medium transition-all duration-300 shadow-xl shadow-purple-500/30 hover:shadow-purple-500/50 border-0 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isSubmitting ? (
             <>

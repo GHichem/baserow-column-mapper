@@ -1,7 +1,8 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { SearchableSelect } from '@/components/ui/searchable-select';
+import { SimpleSelect } from '@/components/ui/simple-select';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
@@ -147,6 +148,9 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
   };
 
   const handleImport = async () => {
+    // Reset any previous import state
+    setShowProgressDialog(false);
+    setProgressInfo(null);
     setIsProcessing(true);
     
     try {
@@ -191,6 +195,13 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
     } catch (error) {
       console.error('Import error:', error);
       setShowProgressDialog(false);
+      
+      // Don't show error toast for user cancellation
+      if (error instanceof Error && error.message === 'Import cancelled by user') {
+        console.log('Import was cancelled by user - not showing error toast');
+        return;
+      }
+      
       toast({
         title: "Import-Fehler",
         description: "Ein Fehler ist beim Import aufgetreten. Bitte versuchen Sie es erneut.",
@@ -279,25 +290,25 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
 
         {/* Stats Cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-12">
-          <Card className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border-slate-700/50 backdrop-blur-sm hover:scale-105 transition-all duration-300 shadow-xl shadow-slate-900/50">
+          <Card className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border-slate-700/50 backdrop-blur-sm hover:shadow-blue-500/20 transition-all duration-300 shadow-xl shadow-slate-900/50">
             <CardContent className="p-6 text-center">
               <div className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-cyan-400 bg-clip-text text-transparent">{stats.total}</div>
               <div className="text-sm text-gray-400 font-medium mt-1">Gesamt</div>
             </CardContent>
           </Card>
-          <Card className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border-slate-700/50 backdrop-blur-sm hover:scale-105 transition-all duration-300 shadow-xl shadow-slate-900/50">
+          <Card className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border-slate-700/50 backdrop-blur-sm hover:shadow-green-500/20 transition-all duration-300 shadow-xl shadow-slate-900/50">
             <CardContent className="p-6 text-center">
               <div className="text-3xl font-bold bg-gradient-to-r from-green-400 to-emerald-400 bg-clip-text text-transparent">{stats.matched}</div>
               <div className="text-sm text-gray-400 font-medium mt-1">Zugeordnet</div>
             </CardContent>
           </Card>
-          <Card className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border-slate-700/50 backdrop-blur-sm hover:scale-105 transition-all duration-300 shadow-xl shadow-slate-900/50">
+          <Card className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border-slate-700/50 backdrop-blur-sm hover:shadow-orange-500/20 transition-all duration-300 shadow-xl shadow-slate-900/50">
             <CardContent className="p-6 text-center">
               <div className="text-3xl font-bold bg-gradient-to-r from-orange-400 to-yellow-400 bg-clip-text text-transparent">{stats.ignored}</div>
               <div className="text-sm text-gray-400 font-medium mt-1">Ignoriert</div>
             </CardContent>
           </Card>
-          <Card className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border-slate-700/50 backdrop-blur-sm hover:scale-105 transition-all duration-300 shadow-xl shadow-slate-900/50">
+          <Card className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border-slate-700/50 backdrop-blur-sm hover:shadow-red-500/20 transition-all duration-300 shadow-xl shadow-slate-900/50">
             <CardContent className="p-6 text-center">
               <div className="text-3xl font-bold bg-gradient-to-r from-red-400 to-pink-400 bg-clip-text text-transparent">{stats.unmapped}</div>
               <div className="text-sm text-gray-400 font-medium mt-1">Offen</div>
@@ -306,7 +317,7 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
         </div>
 
         {/* File Info */}
-        <Card className="mb-8 bg-gradient-to-r from-slate-800/80 to-slate-900/80 border-slate-700/50 backdrop-blur-sm shadow-xl shadow-slate-900/50 hover:shadow-purple-500/20 transition-all duration-500">
+        <Card className="mb-8 bg-gradient-to-r from-slate-800/80 to-slate-900/80 border-slate-700/50 backdrop-blur-sm shadow-xl shadow-slate-900/50 hover:shadow-purple-500/20 transition-all duration-300">
           <CardHeader>
             <CardTitle className="flex items-center gap-3 text-white">
               <div className="p-2 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600">
@@ -328,7 +339,7 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
             </CardTitle>
           </CardHeader>
           <CardContent className="p-6">
-            <div className="space-y-4">
+            <div className="space-y-6">
               {userColumns.map((userColumn, index) => {
                 const mapping = mappings[userColumn];
                 const availableColumns = getAvailableTargetColumns(userColumn);
@@ -346,12 +357,12 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
                 return (
                   <div
                     key={index}
-                    className={`group p-6 rounded-xl border-2 transition-all duration-500 hover:scale-[1.02] hover:shadow-lg ${
+                    className={`group p-6 rounded-xl border-2 transition-all duration-300 hover:shadow-lg ${
                       mapping.isMatched
-                        ? 'border-green-400/50 bg-gradient-to-r from-green-900/30 to-emerald-900/30 shadow-green-500/20'
+                        ? 'border-green-400/50 bg-gradient-to-r from-green-900/30 to-emerald-900/30 shadow-green-500/20 hover:shadow-green-500/40'
                         : mapping.isIgnored
-                        ? 'border-orange-400/50 bg-gradient-to-r from-orange-900/30 to-yellow-900/30 shadow-orange-500/20'
-                        : 'border-slate-600/50 bg-gradient-to-r from-slate-800/50 to-slate-700/50 shadow-slate-500/20'
+                        ? 'border-orange-400/50 bg-gradient-to-r from-orange-900/30 to-yellow-900/30 shadow-orange-500/20 hover:shadow-orange-500/40'
+                        : 'border-slate-600/50 bg-gradient-to-r from-slate-800/50 to-slate-700/50 shadow-slate-500/20 hover:shadow-slate-500/40 hover:border-slate-500/70'
                     }`}
                   >
                     <div className="flex items-center justify-between gap-6">
@@ -382,7 +393,8 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
                         </div>
                         
                         <div className="min-w-0 flex-1">
-                          <SearchableSelect
+                          <SimpleSelect
+                            id={`column-select-${index}`}
                             value={mapping.isIgnored ? 'ignore' : mapping.targetColumn || ''}
                             onValueChange={(value) => handleMappingChange(userColumn, value)}
                             placeholder="Zielfeld auswählen..."
@@ -433,7 +445,9 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
                 <span className="font-medium">Importiere...</span>
               </>
             ) : (
-              <span className="font-medium">Import starten</span>
+              <span className="font-medium">
+                Import starten
+              </span>
             )}
           </Button>
         </div>

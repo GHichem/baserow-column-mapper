@@ -107,6 +107,13 @@ const ColumnMappingPage = () => {
 
     } catch (error) {
       console.error('Import error:', error);
+      
+      // Don't show error toast for user cancellation
+      if (error instanceof Error && error.message === 'Import cancelled by user') {
+        console.log('Import was cancelled by user - not showing error');
+        return;
+      }
+      
       toast({
         title: "Import-Fehler",
         description: "Ein Fehler ist beim Import aufgetreten. Bitte versuchen Sie es erneut.",

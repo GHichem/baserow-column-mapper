@@ -9,14 +9,14 @@ interface UploadData {
 // Configuration - Load from environment variables for security
 const BASEROW_CONFIG = {
   jwtToken: import.meta.env.VITE_BASEROW_JWT_TOKEN || '',
-  apiToken: import.meta.env.VITE_BASEROW_API_TOKEN || 'ZDLLQU57ljuMiGEwKk5DPaAjBXwFLwxR',
+  apiToken: import.meta.env.VITE_BASEROW_API_TOKEN || '',
   tableId: '787',
   targetTableId: '790',
   baseUrl: 'https://baserow.app-inventor.org',
   databaseId: '207',
   // JWT Authentication credentials - Load from environment
-  username: import.meta.env.VITE_BASEROW_USERNAME || 'hgu@xiller.com',
-  password: import.meta.env.VITE_BASEROW_PASSWORD || 'fEifpCnv5HpKVVv'
+  username: import.meta.env.VITE_BASEROW_USERNAME || '',
+  password: import.meta.env.VITE_BASEROW_PASSWORD || ''
 };
 
 // Global variable to hold large file content temporarily (avoids storage limitations)
@@ -27,6 +27,23 @@ let TEMP_FILE_METADATA: { name: string; size: number; recordId: string } | null 
 let CACHED_JWT_TOKEN: string | null = null;
 let JWT_TOKEN_EXPIRES_AT: number = 0;
 const JWT_TOKEN_BUFFER_MS = 5 * 60 * 1000; // Refresh 5 minutes before expiry
+
+// Import cancellation support
+let IMPORT_ABORT_CONTROLLER: AbortController | null = null;
+
+// Cancel current import operation
+export const cancelImport = () => {
+  if (IMPORT_ABORT_CONTROLLER) {
+    console.log('🛑 Cancelling import operation...');
+    IMPORT_ABORT_CONTROLLER.abort();
+    IMPORT_ABORT_CONTROLLER = null;
+    
+    // Also reset any global state flags that might prevent clean restart
+    BULK_OPERATIONS_DISABLED = false;
+    BULK_FAILURE_COUNT = 0;
+    console.log('✅ Import cancelled and global state reset');
+  }
+};
 
 // Function to get a fresh JWT token
 // Function to get a fresh JWT token with caching for performance
@@ -1032,6 +1049,9 @@ export const processImportData = async (
 ): Promise<{ total: number, created: number, updated: number, tableId: string, tableName: string, failed?: number, verified?: number }> => {
   const startTime = performance.now();
   
+  // Create new AbortController for this import
+  IMPORT_ABORT_CONTROLLER = new AbortController();
+  
   try {
     console.log('🚀 ULTRA-FAST IMPORT PROCESS STARTED');
     console.log('Starting import process with mappings:', mappings);
@@ -1357,6 +1377,12 @@ const processVeryLargeFileData = async (
   const batchBuffer: any[] = [];
   
   for (let i = 1; i < lines.length; i++) {
+    // Check for cancellation
+    if (IMPORT_ABORT_CONTROLLER?.signal.aborted) {
+      console.log('🛑 Import cancelled by user during large file processing');
+      throw new Error('Import cancelled by user');
+    }
+    
     const line = lines[i].trim();
 
     // Skip empty lines
@@ -1472,6 +1498,12 @@ const processStandardFileData = async (
   let attempted = 0;
   
   for (let i = 1; i < lines.length; i++) {
+    // Check for cancellation
+    if (IMPORT_ABORT_CONTROLLER?.signal.aborted) {
+      console.log('🛑 Import cancelled by user during standard file processing');
+      throw new Error('Import cancelled by user');
+    }
+    
     const line = lines[i].trim();
 
     if (!line || /^["',\s]*$/.test(line)) {

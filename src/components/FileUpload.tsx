@@ -94,10 +94,10 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, selectedFile }) =
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <div
         className={`
-          border-2 border-dashed rounded-xl p-8 text-center transition-all duration-300 backdrop-blur-sm
+          border-2 border-dashed rounded-xl p-4 text-center transition-all duration-300 backdrop-blur-sm
           ${isDragOver 
             ? 'border-purple-500/70 bg-purple-500/10 shadow-lg shadow-purple-500/20' 
             : 'border-slate-600/50 hover:border-slate-500/70'
@@ -117,7 +117,7 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, selectedFile }) =
         />
 
         {selectedFile ? (
-          <div className="space-y-4">
+          <div className="space-y-3">
             <div className="flex items-center justify-center">
               <div className="relative">
                 <CheckCircle className="h-12 w-12 text-green-400" />

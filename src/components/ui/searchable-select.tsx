@@ -1,6 +1,7 @@
 
 import * as React from "react"
 import { useState, useEffect, useRef } from "react"
+import { createPortal } from "react-dom"
 import { Check, ChevronDown } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -10,17 +11,57 @@ interface SearchableSelectProps {
   placeholder?: string
   options: { value: string; label: string }[]
   className?: string
+  id?: string // Add unique ID prop
 }
 
 export const SearchableSelect = React.forwardRef<
   HTMLDivElement,
   SearchableSelectProps
->(({ value, onValueChange, placeholder, options, className }, ref) => {
+>(({ value, onValueChange, placeholder, options, className, id }, ref) => {
   const [isOpen, setIsOpen] = useState(false)
   const [searchTerm, setSearchTerm] = useState("")
   const [filteredOptions, setFilteredOptions] = useState(options)
+  const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0, width: 0 })
   const containerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+  const uniqueId = React.useMemo(() => id || `searchable-select-${Math.random().toString(36).substr(2, 9)}`, [id])
+
+  const calculatePosition = React.useCallback(() => {
+    if (!containerRef.current) return
+
+    const rect = containerRef.current.getBoundingClientRect()
+    const viewportHeight = window.innerHeight
+    const viewportWidth = window.innerWidth
+    const dropdownHeight = 400 // Approximate max height
+    const scrollTop = document.documentElement.scrollTop || document.body.scrollTop
+    const scrollLeft = document.documentElement.scrollLeft || document.body.scrollLeft
+
+    // Calculate position relative to viewport, then add scroll position
+    let top = rect.bottom + scrollTop + 4
+    let left = rect.left + scrollLeft
+    let width = rect.width
+
+    // Check if dropdown would go off the bottom of screen
+    if (rect.bottom + dropdownHeight > viewportHeight) {
+      // Position above if there's enough space
+      if (rect.top > dropdownHeight) {
+        top = rect.top + scrollTop - dropdownHeight - 4
+      }
+    }
+
+    // Check if dropdown would go off the right side
+    if (rect.left + width > viewportWidth) {
+      left = viewportWidth - width + scrollLeft - 20
+    }
+
+    // Ensure minimum left position
+    if (left < scrollLeft + 10) {
+      left = scrollLeft + 10
+    }
+
+    return { top, left, width }
+  }, [])
 
   useEffect(() => {
     const filtered = options.filter(option =>
@@ -32,21 +73,61 @@ export const SearchableSelect = React.forwardRef<
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        setIsOpen(false)
-        setSearchTerm("")
+        // Check if the click is on THIS dropdown's portal
+        const target = event.target as Element;
+        if (!target.closest(`[data-dropdown-id="${uniqueId}"]`)) {
+          setIsOpen(false)
+          setSearchTerm("")
+        }
       }
     }
 
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [])
+    const handleResize = () => {
+      if (isOpen && containerRef.current) {
+        const position = calculatePosition()
+        if (position) {
+          setDropdownPosition(position)
+        }
+      }
+    }
+
+    if (isOpen) {
+      document.addEventListener('mousedown', handleClickOutside)
+      window.addEventListener('resize', handleResize)
+      window.addEventListener('scroll', handleResize, true)
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside)
+        window.removeEventListener('resize', handleResize)
+        window.removeEventListener('scroll', handleResize, true)
+      }
+    }
+  }, [isOpen, uniqueId, calculatePosition])
 
   const selectedOption = options.find(option => option.value === value)
 
   const handleToggle = () => {
-    setIsOpen(!isOpen)
-    if (!isOpen) {
-      setTimeout(() => inputRef.current?.focus(), 0)
+    if (isOpen) {
+      setIsOpen(false)
+      setSearchTerm("")
+      return
+    }
+    
+    // Close any other open dropdowns
+    document.querySelectorAll('[data-dropdown-id]').forEach((dropdown) => {
+      if (dropdown.getAttribute('data-dropdown-id') !== uniqueId) {
+        // Trigger a click outside event for other dropdowns
+        document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      }
+    })
+    
+    // Calculate position and open dropdown
+    const position = calculatePosition()
+    if (position) {
+      setDropdownPosition(position)
+      setIsOpen(true)
+      
+      // Focus input after a short delay
+      setTimeout(() => inputRef.current?.focus(), 100)
     }
   }
 
@@ -57,7 +138,7 @@ export const SearchableSelect = React.forwardRef<
   }
 
   return (
-    <div ref={containerRef} className={cn("relative", className)}>
+    <div ref={containerRef} className={cn("relative isolate", className)}>
       <div
         ref={ref}
         onClick={handleToggle}
@@ -72,8 +153,19 @@ export const SearchableSelect = React.forwardRef<
         <ChevronDown className="h-4 w-4 opacity-50" />
       </div>
 
-      {isOpen && (
-        <div className="absolute top-full left-0 right-0 z-[100000] mt-1 max-h-96 overflow-hidden rounded-md border bg-slate-800 border-slate-700 text-gray-200 shadow-2xl shadow-slate-900/50 backdrop-blur-sm">
+      {isOpen && createPortal(
+        <div 
+          ref={dropdownRef}
+          data-dropdown-id={uniqueId}
+          className="fixed z-[999999] max-h-96 overflow-hidden rounded-md border bg-slate-800 border-slate-700 text-gray-200 shadow-2xl shadow-slate-900/50 backdrop-blur-sm animate-in fade-in-0 zoom-in-95 duration-150"
+          style={{
+            top: `${dropdownPosition.top}px`,
+            left: `${dropdownPosition.left}px`,
+            width: `${dropdownPosition.width}px`,
+            maxWidth: '400px',
+            minWidth: '200px'
+          }}
+        >
           <div className="p-2 border-b border-slate-700">
             <input
               ref={inputRef}
@@ -89,9 +181,12 @@ export const SearchableSelect = React.forwardRef<
               filteredOptions.map((option) => (
                 <div
                   key={option.value}
-                  onClick={() => handleSelect(option.value)}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    handleSelect(option.value);
+                  }}
                   className={cn(
-                    "relative flex w-full cursor-pointer select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-sm outline-none",
+                    "relative flex w-full cursor-pointer select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-sm outline-none hover:bg-slate-700",
                     value === option.value && "bg-slate-700 text-white"
                   )}
                 >
@@ -107,7 +202,8 @@ export const SearchableSelect = React.forwardRef<
               </div>
             )}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )

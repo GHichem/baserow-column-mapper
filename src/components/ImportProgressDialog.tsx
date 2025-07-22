@@ -1,9 +1,11 @@
 import React from 'react';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { CheckCircle, Clock, Zap, AlertCircle, Database, TrendingUp } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 interface ProgressInfo {
   current: number;
@@ -27,7 +29,7 @@ interface ImportProgressDialogProps {
 const ImportProgressDialog: React.FC<ImportProgressDialogProps> = ({ 
   open, 
   progress, 
-  tableName 
+  tableName
 }) => {
   const formatTime = (seconds: number): string => {
     if (seconds < 60) return `${seconds}s`;
@@ -54,29 +56,39 @@ const ImportProgressDialog: React.FC<ImportProgressDialogProps> = ({
   const isCompleted = progress.percentage >= 100;
 
   return (
-    <Dialog open={open}>
-      <DialogContent className="sm:max-w-md bg-gradient-to-br from-slate-800 to-slate-900 border-slate-700/50 text-white" onPointerDownOutside={(e) => e.preventDefault()}>
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-3">
-            {isCompleted ? (
-              <div className="relative">
-                <CheckCircle className="h-6 w-6 text-green-400" />
-                <div className="absolute inset-0 rounded-full bg-green-400/20 animate-pulse"></div>
-              </div>
-            ) : (
-              <div className="relative">
-                <div className="animate-spin rounded-full h-6 w-6 border-2 border-purple-400 border-t-transparent" />
-                <div className="absolute inset-0 rounded-full bg-purple-400/20 animate-ping"></div>
-              </div>
-            )}
-            <span className="bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent">
-              {isCompleted ? 'Import Abgeschlossen!' : 'Daten werden importiert...'}
-            </span>
-          </DialogTitle>
-          <DialogDescription className="text-gray-400">
+    <DialogPrimitive.Root open={open}>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+        <DialogPrimitive.Content 
+          className={cn(
+            "fixed left-[50%] top-[50%] z-50 grid w-full max-w-md translate-x-[-50%] translate-y-[-50%] gap-4 border border-slate-700/50 bg-gradient-to-br from-slate-800 to-slate-900 p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg text-white"
+          )}
+          onPointerDownOutside={(e) => e.preventDefault()}
+          onEscapeKeyDown={(e) => e.preventDefault()}
+        >
+        <div className="flex flex-col space-y-1.5 text-center sm:text-left">
+          <div className="flex items-center justify-between">
+            <DialogPrimitive.Title className="flex items-center gap-3 text-lg font-semibold leading-none tracking-tight">
+              {isCompleted ? (
+                <div className="relative">
+                  <CheckCircle className="h-6 w-6 text-green-400" />
+                  <div className="absolute inset-0 rounded-full bg-green-400/20 animate-pulse"></div>
+                </div>
+              ) : (
+                <div className="relative">
+                  <div className="animate-spin rounded-full h-6 w-6 border-2 border-purple-400 border-t-transparent" />
+                  <div className="absolute inset-0 rounded-full bg-purple-400/20 animate-ping"></div>
+                </div>
+              )}
+              <span className="bg-gradient-to-r from-white to-gray-300 bg-clip-text text-transparent">
+                {isCompleted ? 'Import Abgeschlossen!' : 'Daten werden importiert...'}
+              </span>
+            </DialogPrimitive.Title>
+          </div>
+          <DialogPrimitive.Description className="text-sm text-gray-400">
             {tableName && `Importiere in Tabelle: ${tableName}`}
-          </DialogDescription>
-        </DialogHeader>
+          </DialogPrimitive.Description>
+        </div>
 
         <div className="space-y-6">
           {/* Main Progress Bar */}
@@ -197,8 +209,9 @@ const ImportProgressDialog: React.FC<ImportProgressDialogProps> = ({
             </div>
           )}
         </div>
-      </DialogContent>
-    </Dialog>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 };
 
