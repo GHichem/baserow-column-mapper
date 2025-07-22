@@ -91,7 +91,7 @@ export const SearchableSelect = React.forwardRef<
                   key={option.value}
                   onClick={() => handleSelect(option.value)}
                   className={cn(
-                    "relative flex w-full cursor-pointer select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-sm outline-none hover:bg-slate-700 hover:text-white transition-colors duration-200",
+                    "relative flex w-full cursor-pointer select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-sm outline-none",
                     value === option.value && "bg-slate-700 text-white"
                   )}
                 >

@@ -3,7 +3,7 @@ import FileUploadForm from '@/components/FileUploadForm';
 
 const Index = () => {
   return (
-    <div className="min-h-screen flex flex-col bg-gradient-to-br from-slate-900 via-purple-900 to-blue-900 relative">
+    <div className="h-screen flex flex-col bg-gradient-to-br from-slate-900 via-purple-900 to-blue-900 relative overflow-hidden">
       {/* Animated background elements */}
       <div className="absolute inset-0 overflow-hidden">
         <div className="absolute -inset-10 opacity-20">
@@ -31,7 +31,7 @@ const Index = () => {
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 flex items-center justify-center px-4 py-8 relative z-10">
+      <div className="flex-1 flex items-center justify-center px-4 py-4 relative z-10">
         <div className="w-full max-w-lg">
           <div className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border border-slate-700/50 rounded-2xl shadow-2xl shadow-slate-900/50 backdrop-blur-sm overflow-hidden hover:shadow-purple-500/20 transition-all duration-500">
             <div className="bg-gradient-to-r from-purple-600 to-cyan-600 p-4 relative">
