@@ -73,7 +73,7 @@ export const SearchableSelect = React.forwardRef<
       </div>
 
       {isOpen && (
-        <div className="absolute top-full left-0 right-0 z-[99999] mt-1 max-h-96 overflow-hidden rounded-md border bg-slate-800 border-slate-700 text-gray-200 shadow-2xl shadow-slate-900/50 backdrop-blur-sm">
+        <div className="absolute top-full left-0 right-0 z-[100000] mt-1 max-h-96 overflow-hidden rounded-md border bg-slate-800 border-slate-700 text-gray-200 shadow-2xl shadow-slate-900/50 backdrop-blur-sm">
           <div className="p-2 border-b border-slate-700">
             <input
               ref={inputRef}
