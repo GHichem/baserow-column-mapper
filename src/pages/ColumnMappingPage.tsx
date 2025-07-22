@@ -127,10 +127,10 @@ const ColumnMappingPage = () => {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-purple-50 flex items-center justify-center">
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-blue-900 flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-lg text-gray-600">Lade Datei-Informationen...</p>
+          <p className="text-lg text-slate-300">Lade Datei-Informationen...</p>
         </div>
       </div>
     );
@@ -138,12 +138,12 @@ const ColumnMappingPage = () => {
 
   if (!uploadedFileInfo || !originalFile) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-purple-50 flex items-center justify-center">
-        <Card className="w-full max-w-md">
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-blue-900 flex items-center justify-center">
+        <Card className="w-full max-w-md bg-slate-800/80 border-slate-700/50 backdrop-blur-sm">
           <CardContent className="p-8 text-center">
-            <AlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
-            <h2 className="text-xl font-semibold mb-4">Datei nicht gefunden</h2>
-            <p className="text-gray-600 mb-6">
+            <AlertCircle className="h-12 w-12 text-red-400 mx-auto mb-4" />
+            <h2 className="text-xl font-semibold mb-4 text-white">Datei nicht gefunden</h2>
+            <p className="text-slate-300 mb-6">
               Es wurde keine hochgeladene Datei gefunden. Bitte starten Sie den Upload-Prozess erneut.
             </p>
             <Button onClick={() => navigate('/')} className="w-full">
@@ -157,46 +157,46 @@ const ColumnMappingPage = () => {
 
   if (importResults) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-purple-50 flex items-center justify-center">
-        <Card className="w-full max-w-2xl">
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-blue-900 flex items-center justify-center px-4 py-8">
+        <Card className="w-full max-w-2xl bg-slate-800/80 border-slate-700/50 backdrop-blur-sm">
           <CardContent className="p-8 text-center">
-            <CheckCircle className="h-16 w-16 text-green-500 mx-auto mb-6" />
-            <h2 className="text-2xl font-bold text-gray-800 mb-4">Neue Tabelle erfolgreich erstellt!</h2>
+            <CheckCircle className="h-16 w-16 text-green-400 mx-auto mb-6" />
+            <h2 className="text-2xl font-bold text-white mb-4">Neue Tabelle erfolgreich erstellt!</h2>
             
-            <div className="bg-blue-50 p-4 rounded-lg mb-6">
-              <h3 className="font-semibold text-blue-800 mb-2">Tabelle Details:</h3>
-              <p className="text-blue-700 font-mono text-sm">{importResults.tableName}</p>
-              <p className="text-blue-600 text-sm">Tabelle-ID: {importResults.tableId}</p>
+            <div className="bg-slate-700/50 p-4 rounded-lg mb-6">
+              <h3 className="font-semibold text-purple-300 mb-2">Tabelle Details:</h3>
+              <p className="text-cyan-300 font-mono text-sm">{importResults.tableName}</p>
+              <p className="text-slate-300 text-sm">Tabelle-ID: {importResults.tableId}</p>
             </div>
             
             <div className="grid grid-cols-2 gap-4 mb-8">
-              <div className="bg-green-50 p-4 rounded-lg">
-                <div className="text-2xl font-bold text-green-600">{importResults.total}</div>
-                <div className="text-sm text-gray-600">Datensätze importiert</div>
+              <div className="bg-green-500/20 border border-green-500/30 p-4 rounded-lg">
+                <div className="text-2xl font-bold text-green-400">{importResults.total}</div>
+                <div className="text-sm text-slate-300">Datensätze importiert</div>
               </div>
-              <div className="bg-blue-50 p-4 rounded-lg">
-                <div className="text-2xl font-bold text-blue-600">{Object.keys(importResults.mappings).length}</div>
-                <div className="text-sm text-gray-600">Spalten zugeordnet</div>
+              <div className="bg-purple-500/20 border border-purple-500/30 p-4 rounded-lg">
+                <div className="text-2xl font-bold text-purple-400">{Object.keys(importResults.mappings).length}</div>
+                <div className="text-sm text-slate-300">Spalten zugeordnet</div>
               </div>
             </div>
 
-            <div className="text-left bg-gray-50 p-4 rounded-lg mb-6">
-              <h3 className="font-semibold text-gray-800 mb-2">Verwendete Spalten-Zuordnungen:</h3>
+            <div className="text-left bg-slate-700/50 p-4 rounded-lg mb-6">
+              <h3 className="font-semibold text-white mb-2">Verwendete Spalten-Zuordnungen:</h3>
               <div className="space-y-1">
                 {Object.entries(importResults.mappings)
                   .filter(([, targetCol]) => targetCol !== 'ignore')
                   .map(([userCol, targetCol]: [string, string]) => (
                   <div key={userCol} className="flex items-center gap-2 text-sm">
-                    <span className="font-mono bg-white px-2 py-1 rounded">{userCol}</span>
-                    <span>→</span>
-                    <span className="font-mono bg-white px-2 py-1 rounded">{targetCol}</span>
+                    <span className="font-mono bg-slate-600 text-white px-2 py-1 rounded">{userCol}</span>
+                    <span className="text-slate-300">→</span>
+                    <span className="font-mono bg-slate-600 text-white px-2 py-1 rounded">{targetCol}</span>
                   </div>
                 ))}
               </div>
             </div>
             
             <div className="flex gap-4 justify-center">
-              <Button onClick={handleStartOver} className="bg-gradient-to-r from-blue-600 to-purple-600">
+              <Button onClick={handleStartOver} className="bg-gradient-to-r from-purple-600 to-cyan-600 hover:from-purple-700 hover:to-cyan-700 text-white">
                 <FileSpreadsheet className="h-4 w-4 mr-2" />
                 Neue Datei hochladen
               </Button>
