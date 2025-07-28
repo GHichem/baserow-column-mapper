@@ -11,6 +11,17 @@ import { getTableSchema, parseFileHeaders } from '@/utils/baserowApi';
 import { smartMatch, calculateSimilarity } from '@/utils/stringMatching';
 import ImportProgressDialog from './ImportProgressDialog';
 
+// Custom CSS for single flash animation
+const flashOnceAnimation = `
+  @keyframes flash-once {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  .animate-flash-once {
+    animation: flash-once 0.8s ease-in-out 1;
+  }
+`;
+
 interface ProgressInfo {
   current: number;
   total: number;
@@ -46,6 +57,9 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
   const [isProcessing, setIsProcessing] = useState(false);
   const [showProgressDialog, setShowProgressDialog] = useState(false);
   const [progressInfo, setProgressInfo] = useState<ProgressInfo | null>(null);
+  const [highlightUnmapped, setHighlightUnmapped] = useState(false);
+  const [highlightedColumns, setHighlightedColumns] = useState<Set<string>>(new Set());
+  const columnRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const { toast } = useToast();
 
   useEffect(() => {
@@ -101,6 +115,10 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
   };
 
   const handleMappingChange = (userColumn: string, targetColumn: string) => {
+    // Clear highlights when user makes changes
+    setHighlightUnmapped(false);
+    setHighlightedColumns(new Set());
+    
     setMappings(prev => {
       const updated = { ...prev };
 
@@ -147,6 +165,33 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
     return targetColumns.filter(col => !usedColumns.includes(col));
   };
 
+  const scrollToFirstUnmappedColumn = (unmappedColumns: string[]) => {
+    if (unmappedColumns.length === 0) return;
+    
+    const firstUnmapped = unmappedColumns[0];
+    const element = columnRefs.current[firstUnmapped];
+    
+    if (element) {
+      // Scroll to the element with smooth behavior
+      element.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+        inline: 'nearest'
+      });
+      
+      // Add extra highlighting to the specific columns
+      setHighlightedColumns(new Set(unmappedColumns));
+      
+      // Focus on the select element to draw attention
+      setTimeout(() => {
+        const selectElement = element.querySelector('button, input') as HTMLElement;
+        if (selectElement) {
+          selectElement.focus();
+        }
+      }, 500);
+    }
+  };
+
   const handleImport = async () => {
     // Reset any previous import state
     setShowProgressDialog(false);
@@ -155,29 +200,51 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
     
     try {
       const finalMappings: Record<string, string> = {};
+      const unmappedColumns: string[] = [];
       
       Object.entries(mappings).forEach(([userCol, mapping]) => {
         if (mapping.targetColumn && !mapping.isIgnored) {
           finalMappings[userCol] = mapping.targetColumn;
+        } else if (!mapping.isIgnored && !mapping.targetColumn) {
+          unmappedColumns.push(userCol);
         }
       });
       
-      if (Object.keys(finalMappings).length === 0) {
+      // Check if there are any mappings at all
+      if (Object.keys(finalMappings).length === 0 && unmappedColumns.length === userColumns.length) {
         toast({
           title: "Keine Zuordnungen",
           description: "Bitte ordnen Sie mindestens eine Spalte zu oder wählen Sie 'Ignorieren'.",
           variant: "destructive",
         });
+        setHighlightUnmapped(true);
+        scrollToFirstUnmappedColumn(unmappedColumns);
         return;
       }
       
-      // Progress callback function - show dialog when we have real file data
-      const progressCallback = (progress: ProgressInfo) => {
-        // Show dialog when we have meaningful total count (real file data)
-        if (progress.total > 100 || (progress.total > 0 && progress.currentBatch !== undefined)) {
-          setShowProgressDialog(true);
-        }
+      // If there are unmapped columns, show them to the user - don't proceed with import
+      if (unmappedColumns.length > 0) {
+        setHighlightUnmapped(true);
+        scrollToFirstUnmappedColumn(unmappedColumns);
         
+        toast({
+          title: `${unmappedColumns.length} Spalte(n) nicht zugeordnet`,
+          description: `Diese Spalten müssen zugeordnet oder ignoriert werden: ${unmappedColumns.join(', ')}. Bitte nehmen Sie die Zuordnungen vor.`,
+          variant: "destructive",
+          duration: 8000, // Longer duration to give user time to review
+        });
+        
+        return; // Stop here - don't proceed with import until all columns are handled
+      }
+      
+      // Clear highlights if proceeding with import
+      setHighlightUnmapped(false);
+      setHighlightedColumns(new Set());
+      
+      // Progress callback function - show dialog immediately when import starts
+      const progressCallback = (progress: ProgressInfo) => {
+        // Show dialog immediately when any progress is reported
+        setShowProgressDialog(true);
         setProgressInfo(progress);
         
         // Auto-hide dialog when completed
@@ -195,6 +262,8 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
     } catch (error) {
       console.error('Import error:', error);
       setShowProgressDialog(false);
+      setHighlightUnmapped(false);
+      setHighlightedColumns(new Set());
       
       // Don't show error toast for user cancellation
       if (error instanceof Error && error.message === 'Import cancelled by user') {
@@ -253,7 +322,11 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
   const stats = getMappingStats();
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-blue-900 py-8 relative overflow-hidden">
+    <>
+      {/* Inject custom CSS for flash animation */}
+      <style dangerouslySetInnerHTML={{ __html: flashOnceAnimation }} />
+      
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-blue-900 py-8 relative overflow-hidden">
       {/* Animated background elements */}
       <div className="absolute inset-0 overflow-hidden">
         <div className="absolute -inset-10 opacity-20">
@@ -354,11 +427,20 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
                     : [])
                 ];
                 
+                const isUnmapped = !mapping.isMatched && !mapping.isIgnored;
+                const shouldHighlight = highlightUnmapped && isUnmapped;
+                const isSpeciallyHighlighted = highlightedColumns.has(userColumn);
+                
                 return (
                   <div
                     key={index}
-                    className={`group p-6 rounded-xl border-2 transition-all duration-300 hover:shadow-lg ${
-                      mapping.isMatched
+                    ref={(el) => {
+                      columnRefs.current[userColumn] = el;
+                    }}
+                    className={`group p-6 rounded-xl border-2 transition-all duration-500 hover:shadow-lg ${
+                      shouldHighlight || isSpeciallyHighlighted
+                        ? 'border-red-400/90 bg-gradient-to-r from-red-900/60 to-rose-900/60 shadow-red-500/40 hover:shadow-red-500/60 ring-2 ring-red-400/30 animate-flash-once'
+                        : mapping.isMatched
                         ? 'border-green-400/50 bg-gradient-to-r from-green-900/30 to-emerald-900/30 shadow-green-500/20 hover:shadow-green-500/40'
                         : mapping.isIgnored
                         ? 'border-orange-400/50 bg-gradient-to-r from-orange-900/30 to-yellow-900/30 shadow-orange-500/20 hover:shadow-orange-500/40'
@@ -436,8 +518,12 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
           
           <Button
             onClick={handleImport}
-            disabled={isProcessing || stats.unmapped > 0}
-            className="px-8 py-3 bg-gradient-to-r from-green-600 via-emerald-600 to-cyan-600 hover:from-green-700 hover:via-emerald-700 hover:to-cyan-700 text-white border-0 shadow-xl shadow-green-500/30 hover:shadow-green-500/50 hover:scale-105 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+            disabled={isProcessing}
+            className={`px-8 py-3 text-white border-0 shadow-xl transition-all duration-300 hover:scale-105 disabled:hover:scale-100 ${
+              stats.unmapped > 0 
+                ? 'bg-gradient-to-r from-amber-600 via-orange-600 to-red-600 hover:from-amber-700 hover:via-orange-700 hover:to-red-700 shadow-amber-500/30 hover:shadow-amber-500/50'
+                : 'bg-gradient-to-r from-green-600 via-emerald-600 to-cyan-600 hover:from-green-700 hover:via-emerald-700 hover:to-cyan-700 shadow-green-500/30 hover:shadow-green-500/50'
+            } ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
             {isProcessing ? (
               <>
@@ -445,9 +531,7 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
                 <span className="font-medium">Importiere...</span>
               </>
             ) : (
-              <span className="font-medium">
-                Import starten
-              </span>
+              <span className="font-medium">Import starten</span>
             )}
           </Button>
         </div>
@@ -459,7 +543,8 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
         progress={progressInfo}
         tableName={uploadedFile.name.replace(/\.[^/.]+$/, "")} // Remove file extension for table name
       />
-    </div>
+      </div>
+    </>
   );
 };
 

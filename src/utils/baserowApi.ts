@@ -45,6 +45,54 @@ export const cancelImport = () => {
   }
 };
 
+// Clear cached JWT token (useful for debugging or manual refresh)
+export const clearJWTTokenCache = () => {
+  CACHED_JWT_TOKEN = null;
+  JWT_TOKEN_EXPIRES_AT = 0;
+  console.log('🧹 JWT token cache cleared');
+};
+
+// Check if we have valid authentication credentials
+export const validateAuthCredentials = (): boolean => {
+  const hasCredentials = !!(BASEROW_CONFIG.username && BASEROW_CONFIG.password);
+  if (!hasCredentials) {
+    console.error('❌ Missing authentication credentials in environment variables');
+    console.error('Please set VITE_BASEROW_USERNAME and VITE_BASEROW_PASSWORD');
+  }
+  return hasCredentials;
+};
+
+// Debug function to check authentication status
+export const getAuthStatus = () => {
+  const now = Date.now();
+  return {
+    hasCredentials: !!(BASEROW_CONFIG.username && BASEROW_CONFIG.password),
+    hasCachedToken: !!CACHED_JWT_TOKEN,
+    tokenExpiresAt: new Date(JWT_TOKEN_EXPIRES_AT).toISOString(),
+    tokenExpiresIn: Math.max(0, JWT_TOKEN_EXPIRES_AT - now),
+    isTokenExpired: JWT_TOKEN_EXPIRES_AT <= (now + JWT_TOKEN_BUFFER_MS),
+    username: BASEROW_CONFIG.username ? `${BASEROW_CONFIG.username.substring(0, 3)}***` : 'NOT_SET',
+    hasPassword: !!BASEROW_CONFIG.password,
+    tokenCacheStatus: {
+      cached: !!CACHED_JWT_TOKEN,
+      expiresInMinutes: Math.round(Math.max(0, JWT_TOKEN_EXPIRES_AT - now) / 60000),
+      willExpireSoon: JWT_TOKEN_EXPIRES_AT <= (now + JWT_TOKEN_BUFFER_MS),
+      bufferMinutes: JWT_TOKEN_BUFFER_MS / 60000
+    }
+  };
+};
+
+// Enhanced debugging function to log token status before operations
+const logTokenStatus = (operation: string) => {
+  const status = getAuthStatus();
+  console.log(`🔍 Token Status before ${operation}:`, {
+    hasCachedToken: status.hasCachedToken,
+    expiresInMinutes: status.tokenCacheStatus.expiresInMinutes,
+    willExpireSoon: status.tokenCacheStatus.willExpireSoon,
+    isExpired: status.isTokenExpired
+  });
+};
+
 // Function to get a fresh JWT token
 // Function to get a fresh JWT token with caching for performance
 const getJWTToken = async (): Promise<string> => {
@@ -57,6 +105,12 @@ const getJWTToken = async (): Promise<string> => {
     }
 
     console.log('🔑 Fetching fresh JWT token...');
+    
+    // Validate that we have credentials
+    if (!BASEROW_CONFIG.username || !BASEROW_CONFIG.password) {
+      throw new Error('Missing authentication credentials. Please check VITE_BASEROW_USERNAME and VITE_BASEROW_PASSWORD environment variables.');
+    }
+    
     const response = await fetch(`${BASEROW_CONFIG.baseUrl}/api/user/token-auth/`, {
       method: 'POST',
       headers: {
@@ -69,10 +123,24 @@ const getJWTToken = async (): Promise<string> => {
     });
 
     if (!response.ok) {
-      throw new Error('Failed to authenticate');
+      const errorText = await response.text();
+      console.error('JWT authentication failed:', errorText);
+      console.error('Response status:', response.status);
+      
+      if (response.status === 401) {
+        throw new Error('Authentication failed: Invalid username or password. Please check your credentials.');
+      } else if (response.status === 403) {
+        throw new Error('Authentication failed: Access forbidden. Please check your account permissions.');
+      } else {
+        throw new Error(`Authentication failed: ${response.status} - ${errorText}`);
+      }
     }
 
     const data = await response.json();
+    
+    if (!data.token) {
+      throw new Error('No token received from authentication response');
+    }
     
     // Cache the token with expiry (JWT tokens typically last 1 hour = 3600 seconds)
     CACHED_JWT_TOKEN = data.token;
@@ -82,6 +150,13 @@ const getJWTToken = async (): Promise<string> => {
     return CACHED_JWT_TOKEN;
   } catch (error) {
     console.error('Error getting JWT token:', error);
+    // Clear cached token on error
+    CACHED_JWT_TOKEN = null;
+    JWT_TOKEN_EXPIRES_AT = 0;
+    
+    if (error instanceof Error) {
+      throw error;
+    }
     throw new Error('Authentication failed');
   }
 };
@@ -706,63 +781,129 @@ const findExistingRecord = async (vorname: string, nachname: string, email: stri
   }
 };
 
-// Create a new table using fresh JWT token
+// Create a new table using fresh JWT token with retry logic
 export const createNewTable = async (tableName: string, columns: string[]): Promise<string> => {
-  try {
-    // Get fresh JWT token
-    const jwtToken = await getJWTToken();
-    
-    // Create table structure
-    const tableData = {
-      name: tableName
-    };
+  let attempt = 0;
+  const maxAttempts = 2;
+  
+  while (attempt < maxAttempts) {
+    try {
+      // Log token status before operation
+      logTokenStatus('table creation');
+      
+      // Get fresh JWT token for each attempt
+      console.log(`🔑 Getting JWT token for table creation (attempt ${attempt + 1}/${maxAttempts})`);
+      const jwtToken = await getJWTToken();
+      
+      // Create table structure
+      const tableData = {
+        name: tableName
+      };
 
-    console.log('Creating table with name:', tableName);
-    const tableResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/tables/database/${BASEROW_CONFIG.databaseId}/`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `JWT ${jwtToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(tableData),
-    });
+      console.log('Creating table with name:', tableName);
+      const tableResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/tables/database/${BASEROW_CONFIG.databaseId}/`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `JWT ${jwtToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(tableData),
+      });
 
-    if (!tableResponse.ok) {
-      const errorText = await tableResponse.text();
-      console.error('Table creation failed:', errorText);
-      throw new Error('Tabelle konnte nicht erstellt werden');
+      if (!tableResponse.ok) {
+        const errorText = await tableResponse.text();
+        console.error('Table creation failed:', errorText);
+        console.error('Response status:', tableResponse.status);
+        
+        // If it's a 401 (token expired) and we haven't retried yet, clear cache and retry
+        if (tableResponse.status === 401 && attempt < maxAttempts - 1) {
+          console.log('🔄 Token expired during table creation, clearing cache and retrying...');
+          CACHED_JWT_TOKEN = null;
+          JWT_TOKEN_EXPIRES_AT = 0;
+          attempt++;
+          continue;
+        }
+        
+        // For other errors or if retries failed, throw error
+        if (tableResponse.status === 401) {
+          throw new Error('Authentication failed during table creation. Please check your credentials.');
+        } else if (tableResponse.status === 403) {
+          throw new Error('Access forbidden during table creation. Please check your permissions.');
+        } else {
+          throw new Error(`Table creation failed: ${tableResponse.status} - ${errorText}`);
+        }
+      }
+
+      const tableResult = await tableResponse.json();
+      console.log('Table created successfully:', tableResult);
+
+      // Minimal wait for table creation
+      await new Promise(resolve => setTimeout(resolve, 50)); // Reduced from 150ms to 50ms
+
+      // Handle the primary "Name" field and create other columns
+      await setupTableColumns(tableResult.id, columns, jwtToken);
+
+      return tableResult.id.toString();
+      
+    } catch (error) {
+      console.error(`Error creating table (attempt ${attempt + 1}):`, error);
+      
+      // If it's a token-related error and we can retry, continue
+      if (error instanceof Error && 
+          (error.message.includes('Authentication failed') || error.message.includes('expired')) && 
+          attempt < maxAttempts - 1) {
+        console.log('🔄 Retrying table creation due to authentication error...');
+        attempt++;
+        continue;
+      }
+      
+      // Otherwise, throw the error
+      throw error;
     }
-
-    const tableResult = await tableResponse.json();
-    console.log('Table created successfully:', tableResult);
-
-    // Minimal wait for table creation
-    await new Promise(resolve => setTimeout(resolve, 50)); // Reduced from 150ms to 50ms
-
-    // Handle the primary "Name" field and create other columns
-    await setupTableColumns(tableResult.id, columns, jwtToken);
-
-    return tableResult.id.toString();
-  } catch (error) {
-    console.error('Error creating table:', error);
-    throw error;
   }
+  
+  throw new Error('Failed to create table after multiple attempts');
 };
 
-// Setup table columns - rename primary field and create others
-const setupTableColumns = async (tableId: string, columns: string[], jwtToken: string) => {
+// Setup table columns - rename primary field and create others with token refresh
+const setupTableColumns = async (tableId: string, columns: string[], initialJwtToken: string) => {
+  let jwtToken = initialJwtToken;
+  
+  const refreshTokenIfNeeded = async (response: Response) => {
+    if (response.status === 401) {
+      console.log('🔄 Token expired during column setup, getting fresh token...');
+      CACHED_JWT_TOKEN = null;
+      JWT_TOKEN_EXPIRES_AT = 0;
+      jwtToken = await getJWTToken();
+      return true;
+    }
+    return false;
+  };
+  
   try {
     console.log('Setting up table columns for table:', tableId, 'with columns:', columns);
     
     // Get current table fields
-    const fieldsResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
+    let fieldsResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
       headers: {
         'Authorization': `JWT ${jwtToken}`,
       },
     });
 
     if (!fieldsResponse.ok) {
-      throw new Error('Failed to fetch table fields');
+      const wasRefreshed = await refreshTokenIfNeeded(fieldsResponse);
+      if (wasRefreshed) {
+        // Retry with fresh token
+        fieldsResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
+          headers: {
+            'Authorization': `JWT ${jwtToken}`,
+          },
+        });
+      }
+      
+      if (!fieldsResponse.ok) {
+        throw new Error('Failed to fetch table fields');
+      }
     }
 
     const fields = await fieldsResponse.json();
@@ -775,7 +916,7 @@ const setupTableColumns = async (tableId: string, columns: string[], jwtToken: s
       // Rename the primary field to the first CSV column
       console.log(`Renaming primary field ${primaryField.name} to ${columns[0]}`);
       
-      const renameResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/${primaryField.id}/`, {
+      let renameResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/${primaryField.id}/`, {
         method: 'PATCH',
         headers: {
           'Authorization': `JWT ${jwtToken}`,
@@ -785,6 +926,23 @@ const setupTableColumns = async (tableId: string, columns: string[], jwtToken: s
           name: columns[0]
         }),
       });
+
+      if (!renameResponse.ok) {
+        const wasRefreshed = await refreshTokenIfNeeded(renameResponse);
+        if (wasRefreshed) {
+          // Retry with fresh token
+          renameResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/${primaryField.id}/`, {
+            method: 'PATCH',
+            headers: {
+              'Authorization': `JWT ${jwtToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              name: columns[0]
+            }),
+          });
+        }
+      }
 
       if (renameResponse.ok) {
         console.log('Successfully renamed primary field to:', columns[0]);
@@ -803,12 +961,25 @@ const setupTableColumns = async (tableId: string, columns: string[], jwtToken: s
       if (field.id !== primaryField?.id && (field.name === 'Notes' || field.name === 'Active')) {
         console.log(`Deleting default field: ${field.name}`);
         
-        const deleteResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/${field.id}/`, {
+        let deleteResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/${field.id}/`, {
           method: 'DELETE',
           headers: {
             'Authorization': `JWT ${jwtToken}`,
           },
         });
+        
+        if (!deleteResponse.ok) {
+          const wasRefreshed = await refreshTokenIfNeeded(deleteResponse);
+          if (wasRefreshed) {
+            // Retry with fresh token
+            deleteResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/${field.id}/`, {
+              method: 'DELETE',
+              headers: {
+                'Authorization': `JWT ${jwtToken}`,
+              },
+            });
+          }
+        }
         
         if (deleteResponse.ok) {
           console.log('Successfully deleted field:', field.name);
@@ -840,8 +1011,10 @@ const setupTableColumns = async (tableId: string, columns: string[], jwtToken: s
   }
 };
 
-// Create a column in the table
-const createTableColumn = async (tableId: string, columnName: string, jwtToken: string) => {
+// Create a column in the table with token refresh support
+const createTableColumn = async (tableId: string, columnName: string, initialJwtToken: string) => {
+  let jwtToken = initialJwtToken;
+  
   try {
     console.log(`Creating column: ${columnName} in table ${tableId}`);
     
@@ -850,7 +1023,7 @@ const createTableColumn = async (tableId: string, columnName: string, jwtToken: 
       type: 'text'
     };
 
-    const columnResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
+    let columnResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
       method: 'POST',
       headers: {
         'Authorization': `JWT ${jwtToken}`,
@@ -860,14 +1033,34 @@ const createTableColumn = async (tableId: string, columnName: string, jwtToken: 
     });
 
     if (!columnResponse.ok) {
-      const errorText = await columnResponse.text();
-      console.error('Column creation failed for:', columnName, errorText);
-      throw new Error(`Failed to create column: ${columnName}`);
-    } else {
-      const result = await columnResponse.json();
-      console.log('Successfully created column:', columnName, 'with ID:', result.id);
-      return result.id;
+      // Check if it's a token issue
+      if (columnResponse.status === 401) {
+        console.log('🔄 Token expired during column creation, getting fresh token...');
+        CACHED_JWT_TOKEN = null;
+        JWT_TOKEN_EXPIRES_AT = 0;
+        jwtToken = await getJWTToken();
+        
+        // Retry with fresh token
+        columnResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `JWT ${jwtToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(columnData),
+        });
+      }
+      
+      if (!columnResponse.ok) {
+        const errorText = await columnResponse.text();
+        console.error('Column creation failed for:', columnName, errorText);
+        throw new Error(`Failed to create column: ${columnName} - ${errorText}`);
+      }
     }
+    
+    const result = await columnResponse.json();
+    console.log('Successfully created column:', columnName, 'with ID:', result.id);
+    return result.id;
   } catch (error) {
     console.error('Error creating column:', columnName, error);
     throw error;
@@ -1055,6 +1248,34 @@ export const processImportData = async (
   try {
     console.log('🚀 ULTRA-FAST IMPORT PROCESS STARTED');
     console.log('Starting import process with mappings:', mappings);
+    
+    // 🚀 IMMEDIATE PROGRESS FEEDBACK - Show loading state right away
+    if (progressCallback) {
+      progressCallback({
+        current: 0,
+        total: 1,
+        percentage: 0,
+        remaining: 1,
+        processing: 'standard',
+        currentBatch: 0,
+        totalBatches: 1
+      });
+    }
+    
+    // Validate authentication credentials before starting
+    if (!validateAuthCredentials()) {
+      throw new Error('Missing authentication credentials. Please check your environment variables (VITE_BASEROW_USERNAME and VITE_BASEROW_PASSWORD).');
+    }
+    
+    // Test JWT token early to catch authentication issues
+    console.log('🔑 Validating authentication...');
+    try {
+      await getJWTToken();
+      console.log('✅ Authentication validated successfully');
+    } catch (authError) {
+      console.error('❌ Authentication failed:', authError);
+      throw new Error(`Authentication failed: ${authError instanceof Error ? authError.message : 'Unknown authentication error'}`);
+    }
     
     // Get file content from stored info
     const uploadedFileInfo = sessionStorage.getItem('uploadedFileInfo');
@@ -1611,7 +1832,13 @@ const processBatchRecords = async (batch: any[], tableId: string, jwtToken: stri
   let currentToken = jwtToken;
   if (JWT_TOKEN_EXPIRES_AT <= (now + JWT_TOKEN_BUFFER_MS)) {
     console.log('🔄 JWT token close to expiry, refreshing...');
-    currentToken = await getJWTToken();
+    try {
+      currentToken = await getJWTToken();
+      console.log('✅ Token refreshed successfully for batch processing');
+    } catch (tokenError) {
+      console.error('❌ Failed to refresh token for batch processing:', tokenError);
+      throw new Error(`Token refresh failed: ${tokenError instanceof Error ? tokenError.message : 'Unknown token error'}`);
+    }
   }
   
   // Skip bulk if it's been disabled due to repeated failures
