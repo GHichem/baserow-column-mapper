@@ -19,6 +19,14 @@ const BASEROW_CONFIG = {
   password: import.meta.env.VITE_BASEROW_PASSWORD || ''
 };
 
+// Performance Configuration for Parallel Processing 🚀
+const PERFORMANCE_CONFIG = {
+  BATCH_SIZE: 200,           // Baserow's API limit per batch
+  PARALLEL_BATCHES: 6,       // Process 6 batches concurrently (1200 records at once!)
+  PAUSE_BETWEEN_GROUPS: 100, // Brief pause (ms) between parallel groups for API courtesy
+  LARGE_FILE_THRESHOLD: 1000 // Files over this many records use parallel processing
+};
+
 // Global variable to hold large file content temporarily (avoids storage limitations)
 let TEMP_FILE_CONTENT: string | null = null;
 let TEMP_FILE_METADATA: { name: string; size: number; recordId: string } | null = null;
@@ -45,11 +53,146 @@ export const cancelImport = () => {
   }
 };
 
+/**
+ * Helper function to recover full file content when TEMP_FILE_CONTENT is missing
+ * or when we have truncated content after a page refresh.
+ * 
+ * @param fileInfo - The uploaded file information from sessionStorage
+ * @param currentContent - The current content available (may be truncated)
+ * @returns Promise<string> - Full file content
+ */
+export const recoverFullFileContentIfNeeded = async (
+  fileInfo: any, 
+  currentContent: string
+): Promise<string> => {
+  // First, check if we already have full content
+  const currentLines = currentContent.split(/\r?\n/).filter(line => line.trim());
+  
+  // Determine if we need to fetch full content
+  const needsFullContent = (
+    // File was optimized/truncated for storage
+    fileInfo.isOptimized ||
+    // Total lines indicate truncation
+    (fileInfo.totalLines && currentLines.length < fileInfo.totalLines * 0.9) ||
+    // Small line count suggests truncation for large files
+    (currentLines.length <= 1000 && fileInfo.originalFileSize > 10 * 1024 * 1024) ||
+    // Content contains truncation markers
+    currentContent.includes('[...CONTENT_TRUNCATED_FOR_STORAGE...]')
+  );
+
+  if (!needsFullContent) {
+    console.log('✅ Current content appears complete, no recovery needed');
+    return currentContent;
+  }
+
+  console.log('🔄 Content recovery needed - fetching full file content');
+  
+  // Check if we have the file URL to fetch from
+  if (!fileInfo.file?.url) {
+    console.warn('⚠️ No file URL available for content recovery');
+    console.warn('💡 Using truncated content - this will result in incomplete import');
+    return currentContent;
+  }
+
+  try {
+    console.log('🌐 Fetching full file content via proxy server...');
+    
+    // Use proxy server to avoid CORS issues
+    const proxyBaseUrl = 
+      import.meta.env.VITE_PROXY_SERVER_URL || 
+      (window.location.hostname === 'localhost' ? 'http://localhost:3001' : 
+       `${window.location.protocol}//${window.location.host}`);
+    
+    const proxyUrl = `${proxyBaseUrl}/api/proxy-baserow-file?url=${encodeURIComponent(fileInfo.file.url)}&token=${encodeURIComponent(BASEROW_CONFIG.apiToken)}`;
+    
+    // Fetch the full file content via proxy with proper headers and timeout
+    const fetchController = new AbortController();
+    const timeoutId = setTimeout(() => fetchController.abort(), 300000); // 5 minute timeout
+    
+    const response = await fetch(proxyUrl, {
+      method: 'GET',
+      headers: {
+        'Accept': 'text/csv,text/plain,application/octet-stream,*/*',
+      },
+      signal: fetchController.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      // Try to get error details from proxy response
+      let errorDetails = `${response.status} ${response.statusText}`;
+      try {
+        const errorBody = await response.json();
+        errorDetails = errorBody.error || errorDetails;
+        
+        // Handle specific proxy error codes
+        if (errorBody.code === 'DOMAIN_NOT_ALLOWED') {
+          throw new Error(`Security: File URL domain is not whitelisted in proxy server`);
+        } else if (errorBody.code === 'AUTH_FAILED') {
+          throw new Error(`Authentication failed - invalid API token`);
+        } else if (errorBody.code === 'FILE_NOT_FOUND') {
+          throw new Error(`File not found on Baserow server`);
+        } else if (errorBody.code === 'TIMEOUT') {
+          throw new Error(`File download timed out - file may be very large`);
+        }
+      } catch (e) {
+        // Response wasn't JSON, use status text
+      }
+      
+      throw new Error(`Proxy request failed: ${errorDetails}`);
+    }
+
+    // Get content type to ensure we're handling text correctly
+    const contentType = response.headers.get('content-type') || '';
+
+    const fullContent = await response.text();
+    const fullLines = fullContent.split(/\r?\n/).filter(line => line.trim());
+    
+    console.log('✅ Successfully recovered full file content via proxy!');
+    
+    // Verify that we actually got more content
+    if (fullContent.length <= currentContent.length) {
+      console.warn('⚠️ Fetched content is not larger than current content - using current content');
+      return currentContent;
+    }
+    
+    return fullContent;
+    
+  } catch (error) {
+    console.error('❌ Failed to recover full file content:', error);
+    
+    // Provide more specific error messages
+    if (error instanceof Error) {
+      if (error.name === 'AbortError') {
+        console.warn('⏰ File recovery timed out - file may be very large');
+      } else if (error.message.includes('ECONNREFUSED') || error.message.includes('fetch failed')) {
+        console.warn('🔌 Proxy server is not running or unreachable');
+        console.warn('💡 Please start the proxy server: npm run proxy:start');
+      } else if (error.message.includes('401') || error.message.includes('403')) {
+        console.warn('🔐 Authentication failed for file recovery - token may be invalid');
+      } else if (error.message.includes('404')) {
+        console.warn('📁 File not found on server - it may have been deleted');
+      } else if (error.message.includes('Domain not allowed')) {
+        console.warn('🚨 Security: File URL domain is not whitelisted in proxy server');
+      } else {
+        console.warn(`🔧 Network or server error: ${error.message}`);
+      }
+    }
+    
+    console.warn('⚠️ Falling back to truncated content - import will be incomplete');
+    console.warn('💡 SOLUTION 1: Start proxy server and try again');
+    console.warn('💡 SOLUTION 2: Re-upload the file and import immediately without navigating away');
+    
+    // Return the truncated content as fallback
+    return currentContent;
+  }
+};
+
 // Clear cached JWT token (useful for debugging or manual refresh)
 export const clearJWTTokenCache = () => {
   CACHED_JWT_TOKEN = null;
   JWT_TOKEN_EXPIRES_AT = 0;
-  console.log('🧹 JWT token cache cleared');
 };
 
 // Check if we have valid authentication credentials
@@ -57,7 +200,6 @@ export const validateAuthCredentials = (): boolean => {
   const hasCredentials = !!(BASEROW_CONFIG.username && BASEROW_CONFIG.password);
   if (!hasCredentials) {
     console.error('❌ Missing authentication credentials in environment variables');
-    console.error('Please set VITE_BASEROW_USERNAME and VITE_BASEROW_PASSWORD');
   }
   return hasCredentials;
 };
@@ -85,12 +227,15 @@ export const getAuthStatus = () => {
 // Enhanced debugging function to log token status before operations
 const logTokenStatus = (operation: string) => {
   const status = getAuthStatus();
-  console.log(`🔍 Token Status before ${operation}:`, {
-    hasCachedToken: status.hasCachedToken,
-    expiresInMinutes: status.tokenCacheStatus.expiresInMinutes,
-    willExpireSoon: status.tokenCacheStatus.willExpireSoon,
-    isExpired: status.isTokenExpired
-  });
+  // Only log if there are issues
+  if (status.isTokenExpired || status.tokenCacheStatus.willExpireSoon) {
+    console.log(`🔍 Token Status before ${operation}:`, {
+      hasCachedToken: status.hasCachedToken,
+      expiresInMinutes: status.tokenCacheStatus.expiresInMinutes,
+      willExpireSoon: status.tokenCacheStatus.willExpireSoon,
+      isExpired: status.isTokenExpired
+    });
+  }
 };
 
 // Function to get a fresh JWT token
@@ -100,7 +245,6 @@ const getJWTToken = async (): Promise<string> => {
     // Check if we have a valid cached token
     const now = Date.now();
     if (CACHED_JWT_TOKEN && JWT_TOKEN_EXPIRES_AT > (now + JWT_TOKEN_BUFFER_MS)) {
-      console.log('🔄 Using cached JWT token');
       return CACHED_JWT_TOKEN;
     }
 
@@ -125,7 +269,6 @@ const getJWTToken = async (): Promise<string> => {
     if (!response.ok) {
       const errorText = await response.text();
       console.error('JWT authentication failed:', errorText);
-      console.error('Response status:', response.status);
       
       if (response.status === 401) {
         throw new Error('Authentication failed: Invalid username or password. Please check your credentials.');
@@ -146,7 +289,6 @@ const getJWTToken = async (): Promise<string> => {
     CACHED_JWT_TOKEN = data.token;
     JWT_TOKEN_EXPIRES_AT = now + (3600 * 1000); // 1 hour from now
     
-    console.log('✅ Successfully obtained and cached JWT token');
     return CACHED_JWT_TOKEN;
   } catch (error) {
     console.error('Error getting JWT token:', error);
@@ -163,12 +305,11 @@ const getJWTToken = async (): Promise<string> => {
 
 export const uploadToBaserow = async (data: UploadData): Promise<void> => {
   try {
-    console.log('Starting upload process for file:', data.file.name, 'Size:', (data.file.size / 1024 / 1024).toFixed(2), 'MB');
+    console.log('Starting upload process for file:', data.file.name);
     
     // Clear any previous temporary file storage
     TEMP_FILE_CONTENT = null;
     TEMP_FILE_METADATA = null;
-    console.log('🧹 Cleared previous temporary file storage');
     
     // Check for existing record first
     const existingRecord = await findExistingRecord(data.vorname, data.nachname, data.email, data.company);
@@ -205,27 +346,20 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
       const updateResult = await updateResponse.json();
       console.log('Successfully updated existing record:', updateResult);
       
-      // Store file info for mapping page - process file in chunks for large files
-      try {
-        console.log('Processing file content for existing record...');
-        const fileContent = await processFileInChunks(data.file);
-        
-        // For very large files, store only header information instead of full content
-        const isLargeFile = data.file.size > 10 * 1024 * 1024; // 10MB threshold
-        let contentToStore = fileContent;
-        
-        if (isLargeFile) {
-          console.log('Large file detected, but storing full content for processing...');
-          // For session storage, we'll store the full content but may need to fetch from URL later
-          contentToStore = fileContent;
-        }
-        
-        const fileInfo = {
-          file: { url: existingRecord.Datei?.[0]?.url || '' },
-          userData: data,
-          fileName: data.file.name,
-          fileContent: contentToStore,
-          recordId: existingRecord.id,
+        // Store file info for mapping page - process file in chunks for large files
+        try {
+          const fileContent = await processFileForStorage(data.file); // Use storage-optimized processing
+          
+          // For very large files, store only header information instead of full content
+          const isLargeFile = data.file.size > 10 * 1024 * 1024; // 10MB threshold
+          let contentToStore = fileContent;
+          
+          const fileInfo = {
+            file: { url: existingRecord.Datei?.[0]?.url || '' },
+            userData: data,
+            fileName: data.file.name,
+            fileContent: contentToStore,
+            recordId: existingRecord.id,
           isLargeFile: isLargeFile,
           originalFileSize: data.file.size,
           fullFileContent: fileContent // Always store full content as backup
@@ -233,16 +367,12 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
         
         try {
           const fileInfoString = JSON.stringify(fileInfo);
-          console.log(`📊 Attempting to store existing file info: ${(fileInfoString.length / 1024 / 1024).toFixed(2)}MB`);
           
           // Clear any existing file info to free up storage space
           sessionStorage.removeItem('uploadedFileInfo');
           
           sessionStorage.setItem('uploadedFileInfo', fileInfoString);
-          console.log('✅ File info stored successfully for existing record');
         } catch (storageError) {
-          console.warn('⚠️ Failed to store complete content for existing record:', storageError.message);
-          
           // Use same fallback strategy as new records
           const lines = fileContent.split('\n');
           let optimizedContent = '';
@@ -251,7 +381,6 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
             const headerLines = lines.slice(0, 1000).join('\n');
             const footerLines = lines.slice(-100).join('\n');
             optimizedContent = headerLines + '\n\n[...CONTENT_TRUNCATED_FOR_STORAGE...]\n\n' + footerLines;
-            console.log(`📦 Using optimized storage for existing record: ${lines.length} lines compressed`);
           } else {
             optimizedContent = fileContent;
           }
@@ -265,27 +394,21 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
           
           try {
             sessionStorage.setItem('uploadedFileInfo', JSON.stringify(optimizedFileInfo));
-            console.log('✅ Stored optimized file info for existing record');
             
             // 🆕 CRITICAL: Store complete file content in temporary memory for existing record optimized path
             if (data.file.size > 10 * 1024 * 1024 && typeof fileContent === 'string') {
-              console.log('🗂️ Storing complete existing file content in temporary memory (optimized path)...');
               TEMP_FILE_CONTENT = fileContent; // Store the COMPLETE content, not optimized
               TEMP_FILE_METADATA = {
                 name: data.file.name,
                 size: data.file.size,
                 recordId: existingRecord.id
               };
-              console.log('✅ Complete existing file content stored in memory from optimized path');
-              console.log(`📊 Stored ${(fileContent.length / 1024 / 1024).toFixed(2)}MB in temporary memory`);
             }
             
             if (lines.length > 2000) {
               console.warn('⚠️ Large existing file content was truncated for storage.');
             }
           } catch (finalError) {
-            console.error('❌ Optimized storage also failed for existing record:', finalError.message);
-            
             // Ultra-minimal storage: Only headers + metadata (for column mapping only)
             const headerOnlyContent = lines.slice(0, 5).join('\n'); // Just first 5 lines for headers
             
@@ -306,23 +429,17 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
             
             try {
               sessionStorage.setItem('uploadedFileInfo', JSON.stringify(ultraMinimalFileInfo));
-              console.warn('⚠️ Stored ultra-minimal file info (headers only) for existing record');
               
               // 🆕 CRITICAL: Store complete file content in temporary memory for existing records too  
               if (data.file.size > 10 * 1024 * 1024 && typeof fileContent === 'string') { // 10MB threshold
-                console.log('🗂️ Storing large existing file content in temporary memory for import...');
                 TEMP_FILE_CONTENT = fileContent;
                 TEMP_FILE_METADATA = {
                   name: data.file.name,
                   size: data.file.size,
                   recordId: existingRecord.id
                 };
-                console.log('✅ Large existing file content stored in memory for import process');
-                console.log(`📊 Stored ${(fileContent.length / 1024 / 1024).toFixed(2)}MB in temporary memory`);
               }
-              console.warn(`� IMPORT READY: Column mapping available, full import will reprocess entire file from server.`);
             } catch (emergencyError) {
-              console.error('💥 Even ultra-minimal storage failed:', emergencyError.message);
               
               // Absolute last resort: Store without any content
               const emergencyFileInfo = {
@@ -339,7 +456,6 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
               };
               
               sessionStorage.setItem('uploadedFileInfo', JSON.stringify(emergencyFileInfo));
-              console.error('🚨 EMERGENCY STORAGE: No file content available. User must re-upload smaller file.');
             }
           }
         }
@@ -382,10 +498,10 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
       console.log('File uploaded successfully:', fileUploadResult);
       
       // Process file in chunks for large files with error handling
-      console.log('Processing file content...');
+      console.log('Processing file content for storage...');
       let fileContent = '';
       try {
-        fileContent = await processFileInChunks(data.file);
+        fileContent = await processFileForStorage(data.file); // Use storage-optimized processing
         console.log('File content processed successfully, length:', fileContent.length);
       } catch (processingError) {
         console.error('Error processing file content:', processingError);
@@ -458,7 +574,6 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
         };
 
         const fileInfoString = JSON.stringify(fileInfo);
-        console.log(`📊 Attempting to store file info: ${(fileInfoString.length / 1024 / 1024).toFixed(2)}MB`);
         
         try {
           // Try to store complete file info first
@@ -466,10 +581,7 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
           sessionStorage.removeItem('uploadedFileInfo');
           
           sessionStorage.setItem('uploadedFileInfo', fileInfoString);
-          console.log('✅ Successfully stored complete file info in session storage');
         } catch (storageError) {
-          console.warn('⚠️ Failed to store complete file content, trying optimized storage...', storageError.message);
-          
           // Fallback 1: Store with compressed content (first and last parts)
           const lines = fileContent.split('\n');
           let optimizedContent = '';
@@ -479,7 +591,6 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
             const headerLines = lines.slice(0, 1000).join('\n');
             const footerLines = lines.slice(-100).join('\n');
             optimizedContent = headerLines + '\n\n[...CONTENT_TRUNCATED_FOR_STORAGE...]\n\n' + footerLines;
-            console.log(`📦 Using optimized storage: ${lines.length} lines compressed to header+footer`);
           } else {
             // For smaller files, try storing just the content without full metadata
             optimizedContent = fileContent;
@@ -499,33 +610,21 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
 
           try {
             sessionStorage.setItem('uploadedFileInfo', JSON.stringify(optimizedFileInfo));
-            console.log('✅ Stored optimized file info in session storage');
             
             // 🆕 IMPORTANT: Store complete file content in temporary memory even for optimized storage
             if (data.file.size > 10 * 1024 * 1024) { // 10MB threshold
-              console.log('🗂️ DEBUG: Attempting to store complete file content in temporary memory (optimized path)...');
-              console.log(`🗂️ DEBUG: File size check: ${data.file.size} > ${10 * 1024 * 1024} = ${data.file.size > 10 * 1024 * 1024}`);
-              console.log(`🗂️ DEBUG: FileContent type: ${typeof fileContent}, length: ${fileContent?.length || 0}`);
-              
               TEMP_FILE_CONTENT = fileContent; // Store the COMPLETE file content, not the optimized version
               TEMP_FILE_METADATA = {
                 name: data.file.name,
                 size: data.file.size,
                 recordId: rowResult.id
               };
-              console.log('✅ Complete file content stored in memory from optimized path');
-              console.log(`📊 Stored ${(fileContent.length / 1024 / 1024).toFixed(2)}MB in temporary memory`);
-              console.log(`🗂️ DEBUG: TEMP_FILE_CONTENT length after storage: ${TEMP_FILE_CONTENT?.length || 0}`);
-              console.log(`🗂️ DEBUG: TEMP_FILE_METADATA:`, TEMP_FILE_METADATA);
-            } else {
-              console.log(`🗂️ DEBUG: File too small for temp storage: ${data.file.size} bytes`);
             }
             
             if (lines.length > 2000) {
               console.warn('⚠️ Large file content was truncated for storage. Column mapping will work, but full import may re-process file.');
             }
           } catch (secondStorageError) {
-            console.error('❌ Even optimized storage failed:', secondStorageError.message);
             
             // Ultra-minimal storage: Only headers + metadata (for column mapping only)
             const headerOnlyContent = lines.slice(0, 5).join('\n'); // Just first 5 lines for headers
@@ -547,21 +646,16 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
             
             try {
               sessionStorage.setItem('uploadedFileInfo', JSON.stringify(ultraMinimalFileInfo));
-              console.warn('⚠️ Stored ultra-minimal file info (headers only)');
               
               // 🆕 For very large files, store content in temporary global variable to bypass storage limits
               if (data.file.size > 10 * 1024 * 1024) { // 10MB threshold
-                console.log('🗂️ Storing large file content in temporary memory for import...');
                 TEMP_FILE_CONTENT = fileContent;
                 TEMP_FILE_METADATA = {
                   name: data.file.name,
                   size: data.file.size,
                   recordId: rowResult.id
                 };
-                console.log('✅ Large file content stored in memory for import process');
-                console.log(`📊 Stored ${(fileContent.length / 1024 / 1024).toFixed(2)}MB in temporary memory`);
               }
-              console.warn(`� IMPORT READY: Column mapping available, full import will reprocess entire file from server.`);
               
               // Show user-friendly info about large file processing
               if (data.file.size > 50 * 1024 * 1024) { // 50MB
@@ -570,7 +664,6 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
               }
               
             } catch (emergencyError) {
-              console.error('💥 Even ultra-minimal storage failed:', emergencyError.message);
               
               // Absolute last resort: Store without any content
               const emergencyFileInfo = {
@@ -588,10 +681,8 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
               
               try {
                 sessionStorage.setItem('uploadedFileInfo', JSON.stringify(emergencyFileInfo));
-                console.error('🚨 EMERGENCY STORAGE: No file content available. Column mapping will require file re-upload.');
                 throw new Error(`Datei ist zu groß für den Browser-Speicher (${(data.file.size / 1024 / 1024).toFixed(1)}MB).\n\nBitte verwenden Sie eine kleinere Datei (empfohlen: < 20MB) oder teilen Sie die Datei in kleinere Abschnitte auf.`);
               } catch (absoluteFailure) {
-                console.error('💥💥 ABSOLUTE FAILURE - Cannot store anything:', absoluteFailure.message);
                 throw new Error('Die Datei ist viel zu groß für den Browser. Bitte verwenden Sie eine deutlich kleinere Datei (< 10MB).');
               }
             }
@@ -631,7 +722,7 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
 };
 
 // Process file in chunks to handle very large files efficiently
-const processFileInChunks = async (file: File): Promise<string> => {
+const processFileInChunks = async (file: File, forUploadProcessing: boolean = false): Promise<string> => {
   const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks for better performance with large files
   let content = '';
   let processedSize = 0;
@@ -642,23 +733,17 @@ const processFileInChunks = async (file: File): Promise<string> => {
       throw new Error(`Datei zu groß (${(file.size / 1024 / 1024).toFixed(2)}MB). Maximale Größe: ${maxFileSize / 1024 / 1024}MB`);
     }
     
-    console.log(`Starting to process file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
-    
-    // For very large files, process only what we need for headers + some sample data
-    if (file.size > 100 * 1024 * 1024) { // 100MB threshold for limited processing
-      console.log('Very large file detected, processing only essential parts...');
-      
-      // Read only the first 10MB for headers and sample data
+    // For storage optimization (not upload processing), process only what we need for headers + some sample data
+    if (!forUploadProcessing && file.size > 100 * 1024 * 1024) { // 100MB threshold for limited processing
+      // Read only the first 10MB for headers and sample data for storage
       const essentialChunk = file.slice(0, 10 * 1024 * 1024);
       const essentialContent = await essentialChunk.text();
       
-      console.log(`Processed essential content: ${(essentialChunk.size / 1024 / 1024).toFixed(2)}MB`);
       return essentialContent;
     }
     
-    // For large files, use streaming
+    // For large files, use streaming for full processing
     if (file.size > 50 * 1024 * 1024) { // 50MB threshold for streaming
-      console.log('Large file detected, using streaming approach');
       return await processLargeFileStreaming(file);
     }
     
@@ -679,8 +764,6 @@ const processFileInChunks = async (file: File): Promise<string> => {
         content += chunkText;
         processedSize += chunk.size;
         
-        console.log(`Processed chunk ${i + 1}/${chunks.length}: ${(processedSize / 1024 / 1024).toFixed(2)}MB / ${(file.size / 1024 / 1024).toFixed(2)}MB`);
-        
         // Minimal delay between chunks for speed
         if (i < chunks.length - 1) {
           await new Promise(resolve => setTimeout(resolve, 5)); // Reduced from 25ms to 5ms
@@ -691,7 +774,7 @@ const processFileInChunks = async (file: File): Promise<string> => {
       }
     }
     
-    console.log(`Successfully processed ${(processedSize / 1024 / 1024).toFixed(2)}MB of ${(file.size / 1024 / 1024).toFixed(2)}MB file`);
+    console.log(`✅ Successfully processed file: ${(processedSize / 1024 / 1024).toFixed(2)}MB`);
     return content;
     
   } catch (error) {
@@ -701,6 +784,71 @@ const processFileInChunks = async (file: File): Promise<string> => {
     }
     throw new Error('Unbekannter Fehler beim Verarbeiten der Datei.');
   }
+};
+
+/**
+ * Process file for storage in sessionStorage (can be optimized/truncated for large files)
+ * This function may return truncated content to save browser storage space.
+ */
+const processFileForStorage = async (file: File): Promise<string> => {
+  return await processFileInChunks(file, false); // false = enable storage optimization
+};
+
+/**
+ * Process file for import operations (always full content)
+ * This function always returns the complete file content, regardless of size.
+ */
+const processFileForImport = async (file: File): Promise<string> => {
+  // For import operations, we need the full file content regardless of size
+  console.log('🔄 Processing file for import - ensuring full content...');
+  
+  const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
+  let content = '';
+  let processedSize = 0;
+  const maxFileSize = 500 * 1024 * 1024; // 500MB limit
+  
+  if (file.size > maxFileSize) {
+    throw new Error(`Datei zu groß (${(file.size / 1024 / 1024).toFixed(2)}MB). Maximale Größe: ${maxFileSize / 1024 / 1024}MB`);
+  }
+  
+  console.log(`Processing FULL file for import: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+  
+  // Always use streaming for import to handle large files
+  if (file.size > 50 * 1024 * 1024) {
+    console.log('Using streaming approach for large file import');
+    return await processLargeFileStreaming(file);
+  }
+  
+  // Process file in chunks
+  const chunks = [];
+  for (let start = 0; start < file.size; start += CHUNK_SIZE) {
+    const end = Math.min(start + CHUNK_SIZE, file.size);
+    const chunk = file.slice(start, end);
+    chunks.push(chunk);
+  }
+  
+  // Process all chunks sequentially
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    
+    try {
+      const chunkText = await chunk.text();
+      content += chunkText;
+      processedSize += chunk.size;
+      
+      console.log(`Import processing chunk ${i + 1}/${chunks.length}: ${(processedSize / 1024 / 1024).toFixed(2)}MB / ${(file.size / 1024 / 1024).toFixed(2)}MB`);
+      
+      if (i < chunks.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+    } catch (chunkError) {
+      console.error('Error processing chunk for import:', chunkError);
+      throw new Error(`Fehler beim Verarbeiten von Chunk ${i + 1} für Import.`);
+    }
+  }
+  
+  console.log(`✅ Successfully processed FULL file for import: ${(processedSize / 1024 / 1024).toFixed(2)}MB`);
+  return content;
 };
 
 // Streaming approach for very large files with explicit UTF-8 decoding
@@ -1293,17 +1441,6 @@ export const processImportData = async (
     const storedContent = fileInfo.fullFileContent || fileInfo.fileContent || '';
     const storedLines = storedContent.split(/\r?\n/).filter(line => line.trim());
     
-    console.log(`📊 IMPORT CONTENT CHECK:`);
-    console.log(`Has fullFileContent: ${!!fileInfo.fullFileContent}`);
-    console.log(`Stored content length: ${storedContent.length} characters`);
-    console.log(`Stored lines count: ${storedLines.length}`);
-    console.log(`Is optimized storage: ${!!fileInfo.isOptimized}`);
-    console.log(`Is header-only storage: ${!!fileInfo.isHeaderOnly}`);
-    console.log(`Requires file reupload: ${!!fileInfo.requiresFileReupload}`);
-    console.log(`Total lines in original file: ${fileInfo.totalLines || 'unknown'}`);
-    console.log(`Has file URL for fallback: ${!!fileInfo.file?.url}`);
-    console.log(`Storage warning: ${fileInfo.storageWarning || 'none'}`);
-    
     // Check if file requires reupload due to storage limitations
     if (fileInfo.requiresFileReupload) {
       throw new Error(`${fileInfo.storageWarning || 'Datei zu groß für Browser-Speicher'}\n\nUm den Import durchzuführen, teilen Sie bitte die Datei in kleinere Abschnitte auf (empfohlen: < 20MB pro Datei).`);
@@ -1356,15 +1493,19 @@ export const processImportData = async (
         TEMP_FILE_METADATA = null;
         console.log('🧹 Cleared temporary file storage');
       } else {
-        // Fallback: Use stored content and warn user
-        console.warn('⚠️ Temporary file content not available, using stored/optimized content');
-        console.warn(`📊 This will limit import to stored content: ${storedLines.length} lines`);
+        // Use the recovery helper to get full content if possible
+        console.log('🔄 Attempting to recover full file content...');
+        content = await recoverFullFileContentIfNeeded(fileInfo, storedContent);
         
-        content = storedContent.replace(/\n\n\[\.\.\.CONTENT_TRUNCATED_FOR_STORAGE\.\.\.\]\n\n/g, '\n');
+        // Clean up any truncation markers
+        content = content.replace(/\n\n\[\.\.\.CONTENT_TRUNCATED_FOR_STORAGE\.\.\.\]\n\n/g, '\n');
         
-        if (fileInfo.totalLines && fileInfo.totalLines > storedLines.length) {
-          console.warn(`⚠️ WARNING: Only importing ${storedLines.length} of ${fileInfo.totalLines} total lines due to storage limitations`);
+        const recoveredLines = content.split(/\r?\n/).filter(line => line.trim());
+        if (fileInfo.totalLines && recoveredLines.length < fileInfo.totalLines * 0.9) {
+          console.warn(`⚠️ WARNING: Only ${recoveredLines.length} of ${fileInfo.totalLines} total lines available`);
           console.warn('💡 SOLUTION: For complete import of very large files, re-upload and import immediately without navigating away.');
+        } else {
+          console.log(`✅ Content recovery successful: ${recoveredLines.length} lines available for import`);
         }
       }
     } else {
@@ -1441,12 +1582,22 @@ export const processImportData = async (
       throw new Error('No columns mapped for import');
     }
     
-    // Create new table
-    const tableName = `${userData.company}_${userData.vorname}_${userData.nachname}_${new Date().toISOString().slice(0, 10)}`;
-    console.log('Creating table with name:', tableName);
+    // Always create a new table for each import to avoid column conflicts and data clearing overhead
+    console.log('� Creating new table (fresh import approach)...');
+    
+    // Delete any existing table first to clean up old data
+    const existingRecord = await findExistingRecord(userData.vorname, userData.nachname, userData.email, userData.company);
+    if (existingRecord && existingRecord.CreatedTableId) {
+      console.log('🗑️ Deleting previous table to make space for new import...');
+      await deleteTable(existingRecord.CreatedTableId);
+    }
+    
+    // Create new table with current timestamp for uniqueness
+    const tableName = `${userData.company}_${userData.vorname}_${userData.nachname}_${new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-')}`;
+    console.log('📋 Creating new table with name:', tableName);
     
     const tableId = await createNewTable(tableName, mappedColumns);
-    console.log('Table created with ID:', tableId);
+    console.log('✅ Table created with ID:', tableId);
     
     // Clean up any default rows that Baserow might have added automatically
     const cleanupToken = await getJWTToken();
@@ -1479,12 +1630,7 @@ export const processImportData = async (
     console.log('Starting to import', lines.length - 1, 'data rows');
     
     const totalDataRows = lines.length - 1;
-    const isVeryLargeFile = totalDataRows > 5000; // Optimized for speed - use streaming for 5000+ rows
-    
-    console.log(`📊 PROCESSING STATS:`);
-    console.log(`Total lines in file: ${lines.length}`);
-    console.log(`Total data rows to process: ${totalDataRows}`);
-    console.log(`Is very large file: ${isVeryLargeFile}`);
+    const isVeryLargeFile = totalDataRows > PERFORMANCE_CONFIG.LARGE_FILE_THRESHOLD; // Use parallel processing for files over threshold
     
     // Initialize progress dialog with actual file data immediately
     if (progressCallback && totalDataRows > 0) {
@@ -1502,9 +1648,10 @@ export const processImportData = async (
     let importResults: { attempted: number, created: number, failed: number, failedRecords: any[] };
     
     if (isVeryLargeFile) {
-      console.log('Very large file detected - using optimized processing');
+      console.log(`🚀 Large file detected (${totalDataRows} rows) - using PARALLEL BATCH processing with ${PERFORMANCE_CONFIG.PARALLEL_BATCHES} concurrent batches`);
       importResults = await processVeryLargeFileData(lines, headers, mappings, mappedColumns, fieldMappings, tableId, jwtToken, progressCallback);
     } else {
+      console.log(`📋 Standard file processing (${totalDataRows} rows) - using sequential processing`);
       importResults = await processStandardFileData(lines, headers, mappings, mappedColumns, fieldMappings, tableId, jwtToken, progressCallback);
     }
 
@@ -1576,7 +1723,7 @@ export const processImportData = async (
   }
 };
 
-// Optimized processing for very large files
+// Optimized processing for very large files with PARALLEL BATCH PROCESSING! 🚀
 const processVeryLargeFileData = async (
   lines: string[], 
   headers: string[], 
@@ -1587,20 +1734,24 @@ const processVeryLargeFileData = async (
   jwtToken: string,
   progressCallback?: (progress: ProgressInfo) => void
 ): Promise<{ attempted: number, created: number, failed: number, failedRecords: any[] }> => {
-  console.log('Processing very large file with optimized approach');
+  console.log('🚀 Processing very large file with PARALLEL BATCH approach');
   
-  const startTime = performance.now(); // Track timing for speed calculation
+  const startTime = performance.now();
   let attempted = 0;
   let created = 0;
   let totalFailed = 0;
   const allFailedRecords: any[] = [];
-  const LARGE_BATCH_SIZE = 200; // Optimized for Baserow's 200-record batch limit
-  const batchBuffer: any[] = [];
+  const BATCH_SIZE = PERFORMANCE_CONFIG.BATCH_SIZE; // Baserow's API limit per batch
+  const PARALLEL_BATCHES = PERFORMANCE_CONFIG.PARALLEL_BATCHES; // Process multiple batches concurrently!
   
+  // First, prepare all data records
+  const allRecords: any[] = [];
+  
+  console.log('📊 Preparing records for parallel processing...');
   for (let i = 1; i < lines.length; i++) {
     // Check for cancellation
     if (IMPORT_ABORT_CONTROLLER?.signal.aborted) {
-      console.log('🛑 Import cancelled by user during large file processing');
+      console.log('🛑 Import cancelled by user during preparation');
       throw new Error('Import cancelled by user');
     }
     
@@ -1645,59 +1796,100 @@ const processVeryLargeFileData = async (
     });
 
     if (hasValidData && Object.keys(mappedData).length > 0) {
-      batchBuffer.push(mappedData);
+      allRecords.push(mappedData);
       attempted++;
     }
+  }
 
-    // Process batch when buffer is full
-    if (batchBuffer.length >= LARGE_BATCH_SIZE) {
-      console.log(`🚀 Processing batch of ${batchBuffer.length} records...`);
-      const batchResults = await processBatchRecords(batchBuffer, tableId, jwtToken);
-      created += batchResults.success;
-      totalFailed += batchResults.failed;
-      allFailedRecords.push(...batchResults.failedRecords);
+  console.log(`✅ Prepared ${allRecords.length} records for import`);
+  console.log(`🚀 Starting PARALLEL batch processing with ${PARALLEL_BATCHES} concurrent batches`);
+
+  // Split records into batches of 200
+  const batches: any[][] = [];
+  for (let i = 0; i < allRecords.length; i += BATCH_SIZE) {
+    batches.push(allRecords.slice(i, i + BATCH_SIZE));
+  }
+
+  console.log(`📦 Created ${batches.length} batches of up to ${BATCH_SIZE} records each`);
+
+  // Process batches in parallel groups
+  for (let i = 0; i < batches.length; i += PARALLEL_BATCHES) {
+    // Check for cancellation
+    if (IMPORT_ABORT_CONTROLLER?.signal.aborted) {
+      console.log('🛑 Import cancelled by user during parallel processing');
+      throw new Error('Import cancelled by user');
+    }
+
+    // Get the next group of batches to process in parallel
+    const currentBatchGroup = batches.slice(i, i + PARALLEL_BATCHES);
+    const batchPromises = currentBatchGroup.map(async (batch, batchIndex) => {
+      const globalBatchIndex = i + batchIndex + 1;
+      console.log(`� Processing batch ${globalBatchIndex}/${batches.length} (${batch.length} records) in parallel...`);
       
-      const percentage = ((i / lines.length) * 100);
-      console.log(`📈 Progress: ${created} created, ${totalFailed} failed (${percentage.toFixed(1)}% complete)`);
-      
-      // Call progress callback with detailed real-time information
-      if (progressCallback) {
-        const elapsedTime = (performance.now() - startTime) / 1000;
-        const remaining = lines.length - 1 - created;
-        const recordsPerSecond = created / Math.max(elapsedTime, 1);
-        const estimatedRemainingTime = remaining / Math.max(recordsPerSecond, 1);
-        const currentBatch = Math.floor(i / LARGE_BATCH_SIZE) + 1;
-        const totalBatches = Math.ceil((lines.length - 1) / LARGE_BATCH_SIZE);
-        
-        progressCallback({
-          current: created,
-          total: lines.length - 1,
-          percentage: Math.round(percentage),
-          remaining: remaining,
-          speed: Math.round(recordsPerSecond),
-          estimatedTimeRemaining: Math.round(estimatedRemainingTime),
-          currentBatch: currentBatch,
-          totalBatches: totalBatches,
-          failed: totalFailed,
-          processing: 'bulk'
-        });
+      try {
+        const batchResults = await processBatchRecords(batch, tableId, jwtToken);
+        console.log(`✅ Batch ${globalBatchIndex} completed: ${batchResults.success} created, ${batchResults.failed} failed`);
+        return batchResults;
+      } catch (error) {
+        console.error(`❌ Batch ${globalBatchIndex} failed:`, error);
+        return { 
+          success: 0, 
+          failed: batch.length, 
+          failedRecords: batch.map(record => ({ data: record, error: error instanceof Error ? error.message : 'Unknown error' }))
+        };
       }
-      
-      // Clear buffer and no delay for maximum speed!
-      batchBuffer.length = 0;
-      // No delay - process as fast as possible!
+    });
+
+    // Wait for all batches in this group to complete
+    console.log(`⏳ Processing ${currentBatchGroup.length} batches in parallel...`);
+    const groupResults = await Promise.all(batchPromises);
+    
+    // Aggregate results
+    for (const result of groupResults) {
+      created += result.success;
+      totalFailed += result.failed;
+      allFailedRecords.push(...result.failedRecords);
+    }
+
+    // Calculate progress and performance
+    const processedRecords = created + totalFailed;
+    const percentage = (processedRecords / allRecords.length) * 100;
+    const elapsedTime = (performance.now() - startTime) / 1000;
+    const recordsPerSecond = processedRecords / Math.max(elapsedTime, 1);
+    const remaining = allRecords.length - processedRecords;
+    const estimatedRemainingTime = remaining / Math.max(recordsPerSecond, 1);
+
+    console.log(`📈 Progress: ${created} created, ${totalFailed} failed (${percentage.toFixed(1)}% complete)`);
+    console.log(`⚡ Speed: ${Math.round(recordsPerSecond)} records/second`);
+    
+    // Call progress callback
+    if (progressCallback) {
+      progressCallback({
+        current: processedRecords,
+        total: allRecords.length,
+        percentage: Math.round(percentage),
+        remaining: remaining,
+        speed: Math.round(recordsPerSecond),
+        estimatedTimeRemaining: Math.round(estimatedRemainingTime),
+        currentBatch: Math.min(i + PARALLEL_BATCHES, batches.length),
+        totalBatches: batches.length,
+        failed: totalFailed,
+        processing: 'bulk'
+      });
+    }
+
+    // Brief pause between parallel groups to be API-friendly
+    if (i + PARALLEL_BATCHES < batches.length) {
+      await new Promise(resolve => setTimeout(resolve, PERFORMANCE_CONFIG.PAUSE_BETWEEN_GROUPS));
     }
   }
 
-  // Process remaining records in buffer
-  if (batchBuffer.length > 0) {
-    console.log(`🚀 Processing final batch of ${batchBuffer.length} records...`);
-    const batchResults = await processBatchRecords(batchBuffer, tableId, jwtToken);
-    created += batchResults.success;
-    totalFailed += batchResults.failed;
-    allFailedRecords.push(...batchResults.failedRecords);
-    console.log(`✅ Final batch complete: ${created} total created, ${totalFailed} total failed`);
-  }
+  const endTime = performance.now();
+  const totalTime = (endTime - startTime) / 1000;
+  console.log(`🎉 PARALLEL PROCESSING COMPLETE!`);
+  console.log(`⚡ Total time: ${totalTime.toFixed(2)} seconds`);
+  console.log(`🚀 Average speed: ${Math.round(created / totalTime)} records/second`);
+  console.log(`📊 Peak throughput: ~${PARALLEL_BATCHES * BATCH_SIZE} records processed concurrently`);
 
   return { attempted, created, failed: totalFailed, failedRecords: allFailedRecords };
 };
@@ -2193,8 +2385,4 @@ export const verifyRecordsCreated = async (tableId: string): Promise<any[]> => {
     console.error('Error verifying records:', error);
     throw error;
   }
-};
-
-export const configureBaserow = (apiToken: string, tableId: string, baseUrl?: string) => {
-  console.log('Configuration is now hardcoded in the baserowApi.ts file');
 };
