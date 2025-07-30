@@ -1,142 +1,160 @@
-# CSV Import Application
+# Baserow CSV Import Tool
 
-A secure and robust React application for uploading and importing CSV files to Baserow.
+A streamlined React application for uploading and importing large CSV files directly to Baserow - **no proxy server required!**
 
-## 🔒 Security Features
+## ✨ Key Features
 
-- Environment variable configuration for sensitive data
-- JWT token authentication with automatic refresh
-- Safe field mapping validation
-- Protected against missing/undefined field errors
+- **🚀 Single Command Setup**: Just `npm run dev` - that's it!
+- **📁 Large File Support**: Handle 50,000+ row files without truncation
+- **💾 Smart Storage**: IndexedDB persistence survives page refreshes  
+- **🔄 Direct Integration**: Connects directly to Baserow API
+- **🎯 Intelligent Mapping**: Smart column matching with manual override
+- **⚡ Optimized Performance**: Streaming upload for large datasets
 
-## 🚀 Recent Improvements
-
-### Security Enhancements
-- **Environment Variables**: Sensitive tokens now loaded from environment variables
-- **Safe Field Access**: Added safety checks for undefined/missing fields
-- **Validation**: Warns about missing field mappings during column mapping
-
-### Large File Support
-- **No Row Limits**: Removed artificial 999-row limit for large files
-- **Progress Tracking**: Added progress callbacks for UI feedback
-- **Streaming Support**: UTF-8 explicit decoding for better file handling
-- **Memory Optimization**: Improved chunk processing for very large files
-
-### Stability Improvements
-- **Better Error Handling**: Enhanced error messages and recovery
-- **Retry Logic**: Automatic retry for failed operations
-- **Rate Limiting**: Handles API rate limits gracefully
-
-## 🛠 Setup
-
-### Environment Configuration
-
-Create a `.env.local` file in your project root:
-
-```env
-# Baserow Configuration
-VITE_BASEROW_API_TOKEN=your_api_token_here
-VITE_BASEROW_USERNAME=your_username_here
-VITE_BASEROW_PASSWORD=your_password_here
-VITE_BASEROW_JWT_TOKEN=your_jwt_token_here  # Optional
-```
-
-**Security Note**: Never commit actual credentials to version control. Use the `.env.example` file as a template.
-
-### Installation
+## 🛠 Quick Start
 
 ```bash
 npm install
 npm run dev
 ```
 
-## 📁 Project Structure
+### Environment Setup
+
+Create `.env.local`:
+```env
+VITE_BASEROW_API_TOKEN=your_api_token
+VITE_BASEROW_USERNAME=your_username  
+VITE_BASEROW_PASSWORD=your_password
+```
+
+## 🏗 Architecture
+
+### Direct Baserow Integration
+```
+Browser App ──HTTPS──> Baserow API
+     ↓
+ IndexedDB Storage (2GB+)
+```
+
+**No proxy server needed!** The application connects directly to Baserow using:
+- JWT authentication with auto-refresh
+- Multiple fallback auth methods
+- Native browser storage for large files
+
+### Problem Solved
+- **Before**: Page refresh = data loss, only ~1000 rows processed
+- **After**: Full file persistence, all 50,000+ rows processed correctly
+
+## � Project Structure
 
 ```
 src/
 ├── components/
-│   ├── FileUpload.tsx          # File upload component
-│   ├── ColumnMapping.tsx       # Column mapping interface
-│   └── ui/                     # Reusable UI components
+│   ├── FileUpload.tsx          # Drag & drop file upload
+│   ├── ColumnMapping.tsx       # Smart column matching
+│   └── ui/                     # Reusable components
 ├── utils/
-│   ├── baserowApi.ts          # Baserow API integration
-│   └── stringMatching.ts     # Smart column matching
+│   ├── baserowApi.ts          # Direct Baserow integration
+│   ├── fileStorage.ts         # IndexedDB file management  
+│   └── stringMatching.ts     # Column similarity matching
 └── pages/
-    └── Index.tsx              # Main application page
+    └── Index.tsx              # Main application
 ```
 
-## 🔧 Key Features
+## 🔧 How It Works
 
-### File Upload
-- Drag & drop support
-- File validation (CSV, XLS, XLSX)
-- Large file handling (no size limits)
-- Progress tracking
+### File Processing
+1. **Upload**: Files stored in IndexedDB (persistent browser storage)
+2. **Analysis**: Headers extracted for column matching
+3. **Mapping**: Smart similarity-based column suggestions
+4. **Import**: Direct streaming to Baserow with progress tracking
 
-### Column Mapping
-- Smart automatic matching
-- Manual column assignment
-- Similarity scoring
-- Ignore unused columns
+### Authentication Methods
+- **JWT Token**: Automatic login with token refresh
+- **API Token**: Direct API access from Baserow settings
+- **Username/Password**: Generates JWT tokens automatically
+- **Public Access**: For open/shared tables
 
-### Data Processing
-- Batch processing for performance
-- Memory-efficient streaming
-- Error recovery and retry logic
-- Progress feedback
+### Large File Handling
+- **Chunked Processing**: Memory-efficient file processing
+- **Progress Tracking**: Real-time upload feedback
+- **Error Recovery**: Automatic retry on failures
+- **Persistent Storage**: Files survive browser refreshes
 
-## 📊 Performance
+## � Performance
 
-- **Small Files (<50MB)**: Standard chunk processing
-- **Large Files (50-100MB)**: Streaming approach
-- **Very Large Files (>100MB)**: Optimized limited processing
-- **Batch Size**: Dynamic based on file size
+| File Size | Processing Method | Notes |
+|-----------|------------------|-------|
+| < 10MB | Standard processing | Fast upload |
+| 10-100MB | Chunked with IndexedDB | Optimized memory usage |
+| 100MB+ | Streaming chunks | Header-only mapping, full import |
 
-## 🐛 Troubleshooting
+## � Troubleshooting
 
 ### Common Issues
 
-1. **Environment Variables Not Loading**
-   - Ensure `.env.local` exists in project root
-   - Restart development server after adding variables
+**Large File Upload Fails**
+- Ensure stable internet connection
+- Check available browser storage space
+- Verify file is not corrupted
 
-2. **Large File Upload Fails**
-   - Check network timeout settings
-   - Verify file is not corrupted
-   - Ensure sufficient memory available
+**Column Mapping Errors**  
+- Check target table exists in Baserow
+- Verify column names don't contain special characters
+- Ensure required fields are mapped
 
-3. **Column Mapping Errors**
-   - Verify target table schema matches expected columns
-   - Check for special characters in column names
+**Authentication Errors**
+- Verify credentials in `.env.local`
+- Check API token hasn't expired
+- Restart dev server after env changes
 
-### Debug Mode
+## 📊 Browser Compatibility
 
-Enable detailed logging by checking browser console. All operations are logged with timestamps and progress indicators.
+- **Chrome**: Full support (recommended)
+- **Firefox**: Full support  
+- **Safari**: Full support (macOS 14+)
+- **Edge**: Full support
 
-## 🔄 API Integration
+*Requires modern browser with IndexedDB support*
 
-The application integrates with Baserow using:
-- REST API for data operations
-- JWT authentication for secure access
-- Automatic token refresh
-- Rate limiting compliance
+## 🔄 Technical Details
+
+### Direct API Integration
+The application connects directly to Baserow's REST API using:
+- HTTPS requests with proper authentication headers
+- JWT token management with automatic refresh
+- CORS-compliant requests (no proxy needed)
+- Rate limiting and error handling
+
+### Storage Strategy
+- **SessionStorage**: Quick access for current session data
+- **IndexedDB**: Persistent storage for large files (2GB+ capacity)
+- **Memory Cache**: Fast access for frequently used data
+- **Automatic Cleanup**: Old files removed to prevent storage bloat
+
+## 🛡 Security
+
+- Environment variable configuration prevents credential exposure
+- JWT tokens are auto-refreshed before expiration
+- No sensitive data logged to console
+- Direct HTTPS communication ensures data security
 
 ## 📈 Future Enhancements
 
-- [ ] Excel file format support
-- [ ] Data validation rules
-- [ ] Custom field types mapping
-- [ ] Bulk update operations
-- [ ] Export functionality
+- [ ] Excel file format support (.xlsx parsing)
+- [ ] Data validation rules before import
+- [ ] Bulk update operations for existing records
+- [ ] Export functionality for processed data
+- [ ] Advanced column transformation options
 
 ## 🤝 Contributing
 
 1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
+2. Create a feature branch: `git checkout -b feature-name`
+3. Make your changes with proper TypeScript types
+4. Test with large files (>50MB recommended)
 5. Submit a pull request
 
 ## 📄 License
 
-This project is licensed under the MIT License.
+MIT License - feel free to use in your projects!

@@ -1,3 +1,5 @@
+import { fileStorage, isIndexedDBAvailable } from './fileStorage';
+
 interface UploadData {
   vorname: string;
   nachname: string;
@@ -34,7 +36,11 @@ let TEMP_FILE_METADATA: { name: string; size: number; recordId: string } | null 
 // JWT Token caching to avoid re-authentication during long imports
 let CACHED_JWT_TOKEN: string | null = null;
 let JWT_TOKEN_EXPIRES_AT: number = 0;
-const JWT_TOKEN_BUFFER_MS = 5 * 60 * 1000; // Refresh 5 minutes before expiry
+const JWT_TOKEN_BUFFER_MS = 10 * 60 * 1000; // Refresh 10 minutes before expiry (increased buffer)
+
+// Enhanced token management for long-running operations
+let LAST_TOKEN_REFRESH: number = 0;
+const MIN_REFRESH_INTERVAL_MS = 30 * 1000; // Minimum 30 seconds between refresh attempts
 
 // Import cancellation support
 let IMPORT_ABORT_CONTROLLER: AbortController | null = null;
@@ -42,14 +48,12 @@ let IMPORT_ABORT_CONTROLLER: AbortController | null = null;
 // Cancel current import operation
 export const cancelImport = () => {
   if (IMPORT_ABORT_CONTROLLER) {
-    console.log('🛑 Cancelling import operation...');
     IMPORT_ABORT_CONTROLLER.abort();
     IMPORT_ABORT_CONTROLLER = null;
     
     // Also reset any global state flags that might prevent clean restart
     BULK_OPERATIONS_DISABLED = false;
     BULK_FAILURE_COUNT = 0;
-    console.log('✅ Import cancelled and global state reset');
   }
 };
 
@@ -81,11 +85,23 @@ export const recoverFullFileContentIfNeeded = async (
   );
 
   if (!needsFullContent) {
-    console.log('✅ Current content appears complete, no recovery needed');
     return currentContent;
   }
 
-  console.log('🔄 Content recovery needed - fetching full file content');
+  // Step 1: Try to get from IndexedDB storage (fastest)
+  if (isIndexedDBAvailable() && fileInfo.recordId) {
+    try {
+      const storedContent = await fileStorage.getFile(fileInfo.recordId);
+      if (storedContent) {
+        const storedLines = storedContent.split(/\r?\n/).filter(line => line.trim());
+        if (storedLines.length > currentLines.length) {
+          return storedContent;
+        }
+      }
+    } catch (error) {
+      // IndexedDB access failed, continue to other methods
+    }
+  }
   
   // Check if we have the file URL to fetch from
   if (!fileInfo.file?.url) {
@@ -95,61 +111,106 @@ export const recoverFullFileContentIfNeeded = async (
   }
 
   try {
-    console.log('🌐 Fetching full file content via proxy server...');
+    console.log('🌐 Fetching full file content directly from Baserow...');
     
-    // Use proxy server to avoid CORS issues
-    const proxyBaseUrl = 
-      import.meta.env.VITE_PROXY_SERVER_URL || 
-      (window.location.hostname === 'localhost' ? 'http://localhost:3001' : 
-       `${window.location.protocol}//${window.location.host}`);
+    // First try direct fetch from Baserow API with JWT token
+    console.log('🔑 Attempting direct Baserow file access...');
     
-    const proxyUrl = `${proxyBaseUrl}/api/proxy-baserow-file?url=${encodeURIComponent(fileInfo.file.url)}&token=${encodeURIComponent(BASEROW_CONFIG.apiToken)}`;
+    let response: Response;
+    let fetchController = new AbortController();
+    let timeoutId = setTimeout(() => fetchController.abort(), 300000); // 5 minute timeout
     
-    // Fetch the full file content via proxy with proper headers and timeout
-    const fetchController = new AbortController();
-    const timeoutId = setTimeout(() => fetchController.abort(), 300000); // 5 minute timeout
-    
-    const response = await fetch(proxyUrl, {
-      method: 'GET',
-      headers: {
-        'Accept': 'text/csv,text/plain,application/octet-stream,*/*',
-      },
-      signal: fetchController.signal
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      // Try to get error details from proxy response
-      let errorDetails = `${response.status} ${response.statusText}`;
-      try {
-        const errorBody = await response.json();
-        errorDetails = errorBody.error || errorDetails;
-        
-        // Handle specific proxy error codes
-        if (errorBody.code === 'DOMAIN_NOT_ALLOWED') {
-          throw new Error(`Security: File URL domain is not whitelisted in proxy server`);
-        } else if (errorBody.code === 'AUTH_FAILED') {
-          throw new Error(`Authentication failed - invalid API token`);
-        } else if (errorBody.code === 'FILE_NOT_FOUND') {
-          throw new Error(`File not found on Baserow server`);
-        } else if (errorBody.code === 'TIMEOUT') {
-          throw new Error(`File download timed out - file may be very large`);
-        }
-      } catch (e) {
-        // Response wasn't JSON, use status text
-      }
+    try {
+      // Get fresh JWT token for file access
+      const jwtToken = await getJWTToken();
       
-      throw new Error(`Proxy request failed: ${errorDetails}`);
+      // Try direct access to Baserow file with JWT token
+      response = await fetch(fileInfo.file.url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `JWT ${jwtToken}`,
+          'Accept': 'text/csv,text/plain,application/octet-stream,*/*',
+        },
+        signal: fetchController.signal
+      });
+
+      clearTimeout(timeoutId);
+      
+      if (response.ok) {
+        console.log('✅ Direct Baserow access successful!');
+      } else {
+        throw new Error(`Direct access failed: ${response.status}`);
+      }
+    } catch (directError) {
+      console.log('⚠️ Direct access failed, trying with API token...');
+      clearTimeout(timeoutId);
+      
+      // Fallback: Try with API token instead of JWT
+      fetchController = new AbortController();
+      timeoutId = setTimeout(() => fetchController.abort(), 300000);
+      
+      try {
+        response = await fetch(fileInfo.file.url, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
+            'Accept': 'text/csv,text/plain,application/octet-stream,*/*',
+          },
+          signal: fetchController.signal
+        });
+
+        clearTimeout(timeoutId);
+        
+        if (response.ok) {
+          console.log('✅ API token access successful!');
+        } else {
+          throw new Error(`API token access failed: ${response.status}`);
+        }
+      } catch (apiTokenError) {
+        console.log('⚠️ API token access failed, trying without authorization...');
+        clearTimeout(timeoutId);
+        
+        // Last resort: Try without authorization (for public files)
+        fetchController = new AbortController();
+        timeoutId = setTimeout(() => fetchController.abort(), 300000);
+        
+        response = await fetch(fileInfo.file.url, {
+          method: 'GET',
+          headers: {
+            'Accept': 'text/csv,text/plain,application/octet-stream,*/*',
+          },
+          signal: fetchController.signal
+        });
+
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+          throw new Error(`All direct access methods failed. Status: ${response.status}`);
+        }
+        console.log('✅ Public access successful!');
+      }
     }
 
-    // Get content type to ensure we're handling text correctly
-    const contentType = response.headers.get('content-type') || '';
+    if (!response.ok) {
+      // Try to get error details from response
+      let errorDetails = `${response.status} ${response.statusText}`;
+      try {
+        const errorBody = await response.text();
+        if (errorBody.trim()) {
+          errorDetails = errorBody;
+        }
+      } catch (e) {
+        // Response wasn't readable, use status text
+      }
+      
+      throw new Error(`File fetch failed: ${errorDetails}`);
+    }
 
     const fullContent = await response.text();
     const fullLines = fullContent.split(/\r?\n/).filter(line => line.trim());
     
-    console.log('✅ Successfully recovered full file content via proxy!');
+    console.log('✅ Successfully recovered full file content directly from Baserow!');
+    console.log(`📊 Retrieved ${fullLines.length} lines (${(fullContent.length / 1024 / 1024).toFixed(2)}MB)`);
     
     // Verify that we actually got more content
     if (fullContent.length <= currentContent.length) {
@@ -158,31 +219,63 @@ export const recoverFullFileContentIfNeeded = async (
     }
     
     return fullContent;
-    
   } catch (error) {
     console.error('❌ Failed to recover full file content:', error);
+    
+    // Last resort: Try to get the file data from the table row itself
+    console.log('🔄 Attempting last resort: fetching file info from table row...');
+    try {
+      const jwtToken = await getJWTToken();
+      const rowResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.tableId}/${fileInfo.recordId}/?user_field_names=true`, {
+        headers: {
+          'Authorization': `JWT ${jwtToken}`,
+        },
+      });
+      
+      if (rowResponse.ok) {
+        const rowData = await rowResponse.json();
+        const fileField = rowData.Datei || rowData.File || rowData.file;
+        
+        if (fileField && Array.isArray(fileField) && fileField.length > 0) {
+          const latestFile = fileField[0];
+          console.log('🔄 Found file in row data, attempting fresh download...');
+          
+          // Try downloading with the fresh file URL
+          const freshResponse = await fetch(latestFile.url, {
+            headers: {
+              'Authorization': `JWT ${jwtToken}`,
+              'Accept': 'text/csv,text/plain,application/octet-stream,*/*',
+            },
+          });
+          
+          if (freshResponse.ok) {
+            const freshContent = await freshResponse.text();
+            console.log('✅ Successfully recovered content via fresh file URL!');
+            return freshContent;
+          }
+        }
+      }
+    } catch (lastResortError) {
+      console.error('❌ Last resort method also failed:', lastResortError);
+    }
     
     // Provide more specific error messages
     if (error instanceof Error) {
       if (error.name === 'AbortError') {
         console.warn('⏰ File recovery timed out - file may be very large');
       } else if (error.message.includes('ECONNREFUSED') || error.message.includes('fetch failed')) {
-        console.warn('🔌 Proxy server is not running or unreachable');
-        console.warn('💡 Please start the proxy server: npm run proxy:start');
+        console.warn('🔌 Cannot connect to Baserow server');
       } else if (error.message.includes('401') || error.message.includes('403')) {
         console.warn('🔐 Authentication failed for file recovery - token may be invalid');
       } else if (error.message.includes('404')) {
         console.warn('📁 File not found on server - it may have been deleted');
-      } else if (error.message.includes('Domain not allowed')) {
-        console.warn('🚨 Security: File URL domain is not whitelisted in proxy server');
       } else {
         console.warn(`🔧 Network or server error: ${error.message}`);
       }
     }
     
     console.warn('⚠️ Falling back to truncated content - import will be incomplete');
-    console.warn('💡 SOLUTION 1: Start proxy server and try again');
-    console.warn('💡 SOLUTION 2: Re-upload the file and import immediately without navigating away');
+    console.warn('💡 SOLUTION: Re-upload the file and import immediately without navigating away');
     
     // Return the truncated content as fallback
     return currentContent;
@@ -193,6 +286,15 @@ export const recoverFullFileContentIfNeeded = async (
 export const clearJWTTokenCache = () => {
   CACHED_JWT_TOKEN = null;
   JWT_TOKEN_EXPIRES_AT = 0;
+  LAST_TOKEN_REFRESH = 0;
+  console.log('🗑️ JWT token cache cleared');
+};
+
+// Manual token refresh function for testing/debugging
+export const forceTokenRefresh = async (): Promise<string> => {
+  console.log('🔄 Forcing token refresh...');
+  clearJWTTokenCache();
+  return await getJWTToken();
 };
 
 // Check if we have valid authentication credentials
@@ -215,6 +317,7 @@ export const getAuthStatus = () => {
     isTokenExpired: JWT_TOKEN_EXPIRES_AT <= (now + JWT_TOKEN_BUFFER_MS),
     username: BASEROW_CONFIG.username ? `${BASEROW_CONFIG.username.substring(0, 3)}***` : 'NOT_SET',
     hasPassword: !!BASEROW_CONFIG.password,
+    lastRefresh: LAST_TOKEN_REFRESH ? new Date(LAST_TOKEN_REFRESH).toISOString() : 'NEVER',
     tokenCacheStatus: {
       cached: !!CACHED_JWT_TOKEN,
       expiresInMinutes: Math.round(Math.max(0, JWT_TOKEN_EXPIRES_AT - now) / 60000),
@@ -227,28 +330,48 @@ export const getAuthStatus = () => {
 // Enhanced debugging function to log token status before operations
 const logTokenStatus = (operation: string) => {
   const status = getAuthStatus();
-  // Only log if there are issues
-  if (status.isTokenExpired || status.tokenCacheStatus.willExpireSoon) {
+  const now = Date.now();
+  const expiresInMinutes = Math.round(Math.max(0, JWT_TOKEN_EXPIRES_AT - now) / 60000);
+  
+  // Only log if there are issues or if we're close to expiry
+  if (status.isTokenExpired || expiresInMinutes <= 20) {
     console.log(`🔍 Token Status before ${operation}:`, {
       hasCachedToken: status.hasCachedToken,
-      expiresInMinutes: status.tokenCacheStatus.expiresInMinutes,
+      expiresInMinutes: expiresInMinutes,
       willExpireSoon: status.tokenCacheStatus.willExpireSoon,
-      isExpired: status.isTokenExpired
+      isExpired: status.isTokenExpired,
+      lastRefresh: status.lastRefresh
     });
   }
 };
 
-// Function to get a fresh JWT token
-// Function to get a fresh JWT token with caching for performance
+// Function to get a fresh JWT token with enhanced caching and error handling
 const getJWTToken = async (): Promise<string> => {
   try {
-    // Check if we have a valid cached token
     const now = Date.now();
+    
+    // Check if we have a valid cached token with buffer
     if (CACHED_JWT_TOKEN && JWT_TOKEN_EXPIRES_AT > (now + JWT_TOKEN_BUFFER_MS)) {
+      // Log remaining time for monitoring
+      const remainingMinutes = Math.round((JWT_TOKEN_EXPIRES_AT - now) / 60000);
+      if (remainingMinutes <= 15) {
+        console.log(`🔑 Using cached token (expires in ${remainingMinutes} minutes)`);
+      }
       return CACHED_JWT_TOKEN;
     }
 
+    // Prevent rapid refresh attempts
+    if (LAST_TOKEN_REFRESH && (now - LAST_TOKEN_REFRESH) < MIN_REFRESH_INTERVAL_MS) {
+      console.log('⏱️ Waiting for minimum refresh interval...');
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
     console.log('🔑 Fetching fresh JWT token...');
+    LAST_TOKEN_REFRESH = now;
+    
+    // Clear old token before requesting new one
+    CACHED_JWT_TOKEN = null;
+    JWT_TOKEN_EXPIRES_AT = 0;
     
     // Validate that we have credentials
     if (!BASEROW_CONFIG.username || !BASEROW_CONFIG.password) {
@@ -285,9 +408,13 @@ const getJWTToken = async (): Promise<string> => {
       throw new Error('No token received from authentication response');
     }
     
-    // Cache the token with expiry (JWT tokens typically last 1 hour = 3600 seconds)
+    // Cache the token with enhanced expiry handling
     CACHED_JWT_TOKEN = data.token;
-    JWT_TOKEN_EXPIRES_AT = now + (3600 * 1000); // 1 hour from now
+    // Set expiry to 50 minutes (conservative estimate for 1-hour tokens)
+    JWT_TOKEN_EXPIRES_AT = now + (50 * 60 * 1000); 
+    
+    const expiresInMinutes = Math.round((JWT_TOKEN_EXPIRES_AT - now) / 60000);
+    console.log(`✅ Fresh JWT token cached (expires in ~${expiresInMinutes} minutes)`);
     
     return CACHED_JWT_TOKEN;
   } catch (error) {
@@ -295,6 +422,7 @@ const getJWTToken = async (): Promise<string> => {
     // Clear cached token on error
     CACHED_JWT_TOKEN = null;
     JWT_TOKEN_EXPIRES_AT = 0;
+    LAST_TOKEN_REFRESH = 0;
     
     if (error instanceof Error) {
       throw error;
@@ -303,10 +431,37 @@ const getJWTToken = async (): Promise<string> => {
   }
 };
 
+// Helper function to ensure fresh token for critical operations
+const ensureFreshToken = async (): Promise<string> => {
+  const now = Date.now();
+  
+  // If token is already expired or expires within 15 minutes, get a fresh one
+  const CRITICAL_BUFFER_MS = 15 * 60 * 1000; // 15 minutes
+  
+  if (!CACHED_JWT_TOKEN || JWT_TOKEN_EXPIRES_AT <= now || JWT_TOKEN_EXPIRES_AT <= (now + CRITICAL_BUFFER_MS)) {
+    console.log('🔄 Proactively refreshing token for long operation...');
+    clearJWTTokenCache(); // Clear cache first to ensure fresh token
+    return await getJWTToken();
+  }
+  
+  return CACHED_JWT_TOKEN;
+};
+
+// Global error handler for token-related issues
+const handleAuthError = (error: any, operation: string) => {
+  if (error instanceof Error && 
+      (error.message.includes('401') || 
+       error.message.includes('Authentication failed') || 
+       error.message.includes('token') || 
+       error.message.includes('expired'))) {
+    console.warn(`🔑 Authentication error in ${operation}, clearing token cache...`);
+    clearJWTTokenCache();
+  }
+  throw error;
+};
+
 export const uploadToBaserow = async (data: UploadData): Promise<void> => {
   try {
-    console.log('Starting upload process for file:', data.file.name);
-    
     // Clear any previous temporary file storage
     TEMP_FILE_CONTENT = null;
     TEMP_FILE_METADATA = null;
@@ -316,7 +471,6 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
     
     if (existingRecord) {
       // Update existing record and delete old table if exists
-      console.log('Found existing record, updating instead of creating new one');
       
       // Delete old table if it exists - with safety check
       if ('CreatedTableId' in existingRecord && existingRecord.CreatedTableId) {
@@ -344,7 +498,6 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
       }
 
       const updateResult = await updateResponse.json();
-      console.log('Successfully updated existing record:', updateResult);
       
         // Store file info for mapping page - process file in chunks for large files
         try {
@@ -395,9 +548,28 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
           try {
             sessionStorage.setItem('uploadedFileInfo', JSON.stringify(optimizedFileInfo));
             
-            // 🆕 CRITICAL: Store complete file content in temporary memory for existing record optimized path
-            if (data.file.size > 10 * 1024 * 1024 && typeof fileContent === 'string') {
-              TEMP_FILE_CONTENT = fileContent; // Store the COMPLETE content, not optimized
+            // 🆕 CRITICAL: Store complete file content using IndexedDB for large files
+            if (data.file.size > 10 * 1024 * 1024 && typeof fileContent === 'string' && isIndexedDBAvailable()) {
+              try {
+                await fileStorage.storeFile(existingRecord.id, fileContent, {
+                  name: data.file.name,
+                  size: data.file.size,
+                  baserowUrl: fileInfo.file?.url || '',
+                });
+                console.log('✅ Stored complete file content in IndexedDB for future access');
+              } catch (indexedDBError) {
+                console.warn('⚠️ Could not store in IndexedDB, falling back to temporary memory:', indexedDBError);
+                // Fallback to temporary memory
+                TEMP_FILE_CONTENT = fileContent;
+                TEMP_FILE_METADATA = {
+                  name: data.file.name,
+                  size: data.file.size,
+                  recordId: existingRecord.id
+                };
+              }
+            } else if (data.file.size > 10 * 1024 * 1024 && typeof fileContent === 'string') {
+              // Fallback to temporary memory if IndexedDB is not available
+              TEMP_FILE_CONTENT = fileContent;
               TEMP_FILE_METADATA = {
                 name: data.file.name,
                 size: data.file.size,
@@ -430,14 +602,35 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
             try {
               sessionStorage.setItem('uploadedFileInfo', JSON.stringify(ultraMinimalFileInfo));
               
-              // 🆕 CRITICAL: Store complete file content in temporary memory for existing records too  
-              if (data.file.size > 10 * 1024 * 1024 && typeof fileContent === 'string') { // 10MB threshold
-                TEMP_FILE_CONTENT = fileContent;
-                TEMP_FILE_METADATA = {
-                  name: data.file.name,
-                  size: data.file.size,
-                  recordId: existingRecord.id
-                };
+              // 🆕 CRITICAL: Store complete file content using IndexedDB or temporary memory
+              if (data.file.size > 10 * 1024 * 1024 && typeof fileContent === 'string') {
+                if (isIndexedDBAvailable()) {
+                  try {
+                    await fileStorage.storeFile(existingRecord.id, fileContent, {
+                      name: data.file.name,
+                      size: data.file.size,
+                      baserowUrl: fileInfo.file?.url || '',
+                    });
+                    console.log('✅ Stored complete file content in IndexedDB for future access');
+                  } catch (indexedDBError) {
+                    console.warn('⚠️ Could not store in IndexedDB, falling back to temporary memory:', indexedDBError);
+                    // Fallback to temporary memory
+                    TEMP_FILE_CONTENT = fileContent;
+                    TEMP_FILE_METADATA = {
+                      name: data.file.name,
+                      size: data.file.size,
+                      recordId: existingRecord.id
+                    };
+                  }
+                } else {
+                  // Fallback to temporary memory if IndexedDB is not available
+                  TEMP_FILE_CONTENT = fileContent;
+                  TEMP_FILE_METADATA = {
+                    name: data.file.name,
+                    size: data.file.size,
+                    recordId: existingRecord.id
+                  };
+                }
               }
             } catch (emergencyError) {
               
@@ -611,9 +804,28 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
           try {
             sessionStorage.setItem('uploadedFileInfo', JSON.stringify(optimizedFileInfo));
             
-            // 🆕 IMPORTANT: Store complete file content in temporary memory even for optimized storage
-            if (data.file.size > 10 * 1024 * 1024) { // 10MB threshold
-              TEMP_FILE_CONTENT = fileContent; // Store the COMPLETE file content, not the optimized version
+            // 🆕 IMPORTANT: Store complete file content using IndexedDB for large files
+            if (data.file.size > 10 * 1024 * 1024 && isIndexedDBAvailable()) {
+              try {
+                await fileStorage.storeFile(rowResult.id, fileContent, {
+                  name: data.file.name,
+                  size: data.file.size,
+                  baserowUrl: fileUploadResult?.url || '',
+                });
+                console.log('✅ Stored complete file content in IndexedDB for future access');
+              } catch (indexedDBError) {
+                console.warn('⚠️ Could not store in IndexedDB, falling back to temporary memory:', indexedDBError);
+                // Fallback to temporary memory
+                TEMP_FILE_CONTENT = fileContent;
+                TEMP_FILE_METADATA = {
+                  name: data.file.name,
+                  size: data.file.size,
+                  recordId: rowResult.id
+                };
+              }
+            } else if (data.file.size > 10 * 1024 * 1024) {
+              // Fallback to temporary memory if IndexedDB is not available
+              TEMP_FILE_CONTENT = fileContent;
               TEMP_FILE_METADATA = {
                 name: data.file.name,
                 size: data.file.size,
@@ -647,14 +859,35 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
             try {
               sessionStorage.setItem('uploadedFileInfo', JSON.stringify(ultraMinimalFileInfo));
               
-              // 🆕 For very large files, store content in temporary global variable to bypass storage limits
-              if (data.file.size > 10 * 1024 * 1024) { // 10MB threshold
-                TEMP_FILE_CONTENT = fileContent;
-                TEMP_FILE_METADATA = {
-                  name: data.file.name,
-                  size: data.file.size,
-                  recordId: rowResult.id
-                };
+              // 🆕 For very large files, store content using IndexedDB or temporary global variable
+              if (data.file.size > 10 * 1024 * 1024) {
+                if (isIndexedDBAvailable()) {
+                  try {
+                    await fileStorage.storeFile(rowResult.id, fileContent, {
+                      name: data.file.name,
+                      size: data.file.size,
+                      baserowUrl: fileUploadResult?.url || '',
+                    });
+                    console.log('✅ Stored complete file content in IndexedDB for future access');
+                  } catch (indexedDBError) {
+                    console.warn('⚠️ Could not store in IndexedDB, falling back to temporary memory:', indexedDBError);
+                    // Fallback to temporary memory
+                    TEMP_FILE_CONTENT = fileContent;
+                    TEMP_FILE_METADATA = {
+                      name: data.file.name,
+                      size: data.file.size,
+                      recordId: rowResult.id
+                    };
+                  }
+                } else {
+                  // Fallback to temporary memory if IndexedDB is not available
+                  TEMP_FILE_CONTENT = fileContent;
+                  TEMP_FILE_METADATA = {
+                    name: data.file.name,
+                    size: data.file.size,
+                    recordId: rowResult.id
+                  };
+                }
               }
               
               // Show user-friendly info about large file processing
@@ -939,9 +1172,9 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
       // Log token status before operation
       logTokenStatus('table creation');
       
-      // Get fresh JWT token for each attempt
-      console.log(`🔑 Getting JWT token for table creation (attempt ${attempt + 1}/${maxAttempts})`);
-      const jwtToken = await getJWTToken();
+      // Get fresh JWT token for each attempt with enhanced buffer
+      console.log(`🔑 Getting fresh JWT token for table creation (attempt ${attempt + 1}/${maxAttempts})`);
+      const jwtToken = await ensureFreshToken(); // Use ensureFreshToken instead of getJWTToken
       
       // Create table structure
       const tableData = {
@@ -966,8 +1199,7 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
         // If it's a 401 (token expired) and we haven't retried yet, clear cache and retry
         if (tableResponse.status === 401 && attempt < maxAttempts - 1) {
           console.log('🔄 Token expired during table creation, clearing cache and retrying...');
-          CACHED_JWT_TOKEN = null;
-          JWT_TOKEN_EXPIRES_AT = 0;
+          clearJWTTokenCache(); // Use the proper cache clearing function
           attempt++;
           continue;
         }
@@ -1020,9 +1252,8 @@ const setupTableColumns = async (tableId: string, columns: string[], initialJwtT
   const refreshTokenIfNeeded = async (response: Response) => {
     if (response.status === 401) {
       console.log('🔄 Token expired during column setup, getting fresh token...');
-      CACHED_JWT_TOKEN = null;
-      JWT_TOKEN_EXPIRES_AT = 0;
-      jwtToken = await getJWTToken();
+      clearJWTTokenCache(); // Use proper cache clearing function
+      jwtToken = await ensureFreshToken(); // Use ensureFreshToken for consistency
       return true;
     }
     return false;
@@ -1184,9 +1415,8 @@ const createTableColumn = async (tableId: string, columnName: string, initialJwt
       // Check if it's a token issue
       if (columnResponse.status === 401) {
         console.log('🔄 Token expired during column creation, getting fresh token...');
-        CACHED_JWT_TOKEN = null;
-        JWT_TOKEN_EXPIRES_AT = 0;
-        jwtToken = await getJWTToken();
+        clearJWTTokenCache(); // Use proper cache clearing function
+        jwtToken = await ensureFreshToken(); // Use ensureFreshToken for consistency
         
         // Retry with fresh token
         columnResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
@@ -1215,10 +1445,10 @@ const createTableColumn = async (tableId: string, columnName: string, initialJwt
   }
 };
 
-// Delete a table using fresh JWT token
+// Delete a table using fresh JWT token with enhanced token management
 const deleteTable = async (tableId: string) => {
   try {
-    const jwtToken = await getJWTToken();
+    const jwtToken = await ensureFreshToken(); // Use ensureFreshToken for reliable deletion
     
     const response = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/tables/${tableId}/`, {
       method: 'DELETE',
@@ -1600,7 +1830,7 @@ export const processImportData = async (
     console.log('✅ Table created with ID:', tableId);
     
     // Clean up any default rows that Baserow might have added automatically
-    const cleanupToken = await getJWTToken();
+    const cleanupToken = await ensureFreshToken(); // Use ensureFreshToken for consistency
     const defaultRows = await verifyRecordsCreated(tableId);
 
     if (defaultRows.length > 0) {
@@ -1623,8 +1853,9 @@ export const processImportData = async (
     const fieldMappings = await getFieldMappings(tableId, mappedColumns);
     console.log('Field mappings after table setup:', fieldMappings);
     
-    // Get fresh JWT token for record creation
-    const jwtToken = await getJWTToken();
+    // Ensure we have a fresh token for the entire import operation
+    console.log('🔑 Ensuring fresh token for import operation...');
+    const jwtToken = await ensureFreshToken();
 
     // Process data rows with streaming approach for very large files
     console.log('Starting to import', lines.length - 1, 'data rows');
@@ -1704,6 +1935,16 @@ export const processImportData = async (
     const totalTime = ((endTime - startTime) / 1000).toFixed(2);
     console.log(`\n⚡ TOTAL IMPORT TIME: ${totalTime} seconds`);
     console.log(`📊 SPEED: ${(importResults.created / parseFloat(totalTime)).toFixed(1)} records/second`);
+    
+    // Clean up IndexedDB storage after successful import
+    if (isIndexedDBAvailable() && fileInfo.recordId) {
+      try {
+        await fileStorage.deleteFile(fileInfo.recordId);
+        console.log('🧹 Cleaned up IndexedDB storage after successful import');
+      } catch (cleanupError) {
+        console.warn('⚠️ Could not clean up IndexedDB storage:', cleanupError);
+      }
+    }
     
     return { 
       total: importResults.attempted, 
@@ -1818,6 +2059,17 @@ const processVeryLargeFileData = async (
     if (IMPORT_ABORT_CONTROLLER?.signal.aborted) {
       console.log('🛑 Import cancelled by user during parallel processing');
       throw new Error('Import cancelled by user');
+    }
+
+    // Refresh token every 10 batch groups to prevent expiration during very long imports
+    if (i > 0 && i % (PARALLEL_BATCHES * 10) === 0) {
+      console.log('🔄 Refreshing token for continued processing...');
+      try {
+        await ensureFreshToken();
+      } catch (tokenError) {
+        console.error('❌ Failed to refresh token during processing:', tokenError);
+        // Continue with existing token if refresh fails
+      }
     }
 
     // Get the next group of batches to process in parallel
@@ -2015,22 +2267,17 @@ let BULK_OPERATIONS_DISABLED = false;
 let BULK_FAILURE_COUNT = 0;
 let CURRENT_BATCH_SIZE = 200; // Start with Baserow's documented limit
 
-// Process a batch of records with true bulk operations for maximum speed
+// Process a batch of records with enhanced token management
 const processBatchRecords = async (batch: any[], tableId: string, jwtToken: string): Promise<{ success: number, failed: number, failedRecords: any[] }> => {
   console.log(`🚀 Processing batch of ${batch.length} records with ${BULK_OPERATIONS_DISABLED ? 'individual (bulk disabled)' : 'bulk'} operation...`);
   
-  // Check if token might be expired and refresh if needed
-  const now = Date.now();
-  let currentToken = jwtToken;
-  if (JWT_TOKEN_EXPIRES_AT <= (now + JWT_TOKEN_BUFFER_MS)) {
-    console.log('🔄 JWT token close to expiry, refreshing...');
-    try {
-      currentToken = await getJWTToken();
-      console.log('✅ Token refreshed successfully for batch processing');
-    } catch (tokenError) {
-      console.error('❌ Failed to refresh token for batch processing:', tokenError);
-      throw new Error(`Token refresh failed: ${tokenError instanceof Error ? tokenError.message : 'Unknown token error'}`);
-    }
+  // Always ensure we have a fresh token for batch operations
+  let currentToken: string;
+  try {
+    currentToken = await ensureFreshToken();
+  } catch (tokenError) {
+    console.error('❌ Failed to get fresh token for batch processing:', tokenError);
+    throw new Error(`Token refresh failed: ${tokenError instanceof Error ? tokenError.message : 'Unknown token error'}`);
   }
   
   // Skip bulk if it's been disabled due to repeated failures
@@ -2070,6 +2317,7 @@ const processBatchRecords = async (batch: any[], tableId: string, jwtToken: stri
         // Handle token expiry specifically
         if (bulkResponse.status === 401) {
           console.warn('🔑 Token expired during bulk operation, getting fresh token...');
+          clearJWTTokenCache(); // Clear cache before refresh
           currentToken = await getJWTToken();
           
           // Retry with fresh token
@@ -2296,15 +2544,18 @@ const parseCSVLine = (line: string): string[] => {
   return result;
 };
 
-// Ultra-fast record creation with optimized retry handling
+// Enhanced record creation with robust token refresh
 const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken: string, retryCount = 0) => {
-  const MAX_RETRIES = 0; // No retries for maximum speed
+  const MAX_RETRIES = 1; // Allow one retry for token expiration
   
   try {
+    // Use fresh token for first attempt, provided token for retries
+    const tokenToUse = retryCount === 0 ? await ensureFreshToken() : jwtToken;
+    
     const createResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${tableId}/`, {
       method: 'POST',
       headers: {
-        'Authorization': `JWT ${jwtToken}`,
+        'Authorization': `JWT ${tokenToUse}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(recordData),
@@ -2313,11 +2564,11 @@ const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken
     if (!createResponse.ok) {
       const errorText = await createResponse.text();
       
-      // Only handle token expiry for 401 errors - skip other retries for speed
-      if (createResponse.status === 401 && retryCount === 0) {
+      // Handle token expiry for 401 errors
+      if (createResponse.status === 401 && retryCount < MAX_RETRIES) {
         console.log('🔑 Token expired in individual creation, getting fresh token...');
         const freshToken = await getJWTToken();
-        return await createRecordInNewTable(tableId, recordData, freshToken, 1);
+        return await createRecordInNewTable(tableId, recordData, freshToken, retryCount + 1);
       }
       
       throw new Error(`HTTP ${createResponse.status}: ${errorText}`);
@@ -2326,7 +2577,13 @@ const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken
     return await createResponse.json();
     
   } catch (error) {
-    throw error; // No retries for maximum speed
+    // Only retry on token errors
+    if (error instanceof Error && error.message.includes('401') && retryCount < MAX_RETRIES) {
+      console.log('🔄 Retrying individual record creation with fresh token...');
+      const freshToken = await getJWTToken();
+      return await createRecordInNewTable(tableId, recordData, freshToken, retryCount + 1);
+    }
+    throw error;
   }
 };
 
