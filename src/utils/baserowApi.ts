@@ -1512,7 +1512,7 @@ export const getTableSchema = async (tableId: string) => {
   }
 };
 
-// Parse CSV/Excel file to get headers using stored file content
+// Parse CSV file to get headers using stored file content
 export const parseFileHeaders = async (file: File): Promise<string[]> => {
   try {
     // Get the uploaded file info from session storage
@@ -1589,9 +1589,8 @@ export const parseFileHeaders = async (file: File): Promise<string[]> => {
         throw new Error('CSV file appears to be empty');
       }
     } else {
-      // For Excel files, we'll need a more sophisticated approach
-      // For now, let's assume the user will upload CSV files
-      throw new Error('Excel files not yet supported for header parsing');
+      // Only CSV files are supported
+      throw new Error('Only CSV files are supported. Please upload a .csv file.');
     }
   } catch (error) {
     console.error('Error parsing file headers:', error);

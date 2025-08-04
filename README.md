@@ -141,7 +141,6 @@ The application connects directly to Baserow's REST API using:
 
 ## 📈 Future Enhancements
 
-- [ ] Excel file format support (.xlsx parsing)
 - [ ] Data validation rules before import
 - [ ] Bulk update operations for existing records
 - [ ] Export functionality for processed data
