@@ -1,7 +1,8 @@
 {
-  "name": "vite_react_shadcn_ts",
+  "name": "baserow-column-mapper",
+  "description": "A sophisticated React application for uploading, mapping, and importing large CSV files directly to Baserow with intelligent column matching",
+  "version": "1.0.0",
   "private": true,
-  "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
