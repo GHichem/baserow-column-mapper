@@ -1,48 +1,99 @@
-# 📊 Baserow Column Mapper
+# Baserow CSV Column Mapper
 
-A powerful **React + TypeScript** application for importing CSV files into Baserow tables with intelligent column mapping. Handles large files (50,000+ rows) with persistent storage and smart column matching algorithms.
+A sophisticated React application for uploading, mapping, and importing large CSV files directly to Baserow with intelligent column matching - **now with secure proxy server option!**
 
 ## ✨ Key Features
 
-### 🚀 **Large File Processing**
-- **50,000+ row CSV files** supported with optimized memory usage
-- **Real-time progress tracking** with speed metrics and ETA
-- **Persistent file storage** using IndexedDB (files survive page refreshes)
-- **Parallel batch processing** for faster imports (6 concurrent batches)
+- **� Secure Token Management**: Optional proxy server to hide API tokens from frontend
+- **🚀 Flexible Setup**: Direct integration OR proxy server - your choice!
+- **📁 Large File Support**: Handle 50,000+ row files without truncation
+- **💾 Smart Storage**: IndexedDB persistence survives page refreshes  
+- **🔄 Direct Integration**: Connects directly to Baserow API
+- **🎯 Intelligent Column Mapping**: Smart similarity-based column matching with manual override
+- **⚡ Optimized Performance**: Parallel batch processing and streaming upload for large datasets
+- **🎨 Modern UI**: Built with React, TypeScript, Tailwind CSS, and ShadCN/UI components
 
-### 🎯 **Intelligent Column Matching**
-- **Smart similarity algorithms** for automatic column suggestions
-- **Manual override options** for perfect data mapping
-- **Preview and validation** before final import
-- **Supports complex CSV structures** with quotes and escape characters
+## 🛠 Quick Start
 
-### 🔐 **Direct API Integration**
-- **Direct Baserow API connection** with HTTPS security
-- **Dual authentication**: API tokens and JWT authentication
-- **Automatic token refresh** with 15-minute buffer for uninterrupted imports
-- **Multiple fallback methods** ensure reliable connections
-- **Production-ready security** with environment variable configuration
+### Option 1: With Proxy Server (Recommended for Production) 🔒
 
-### 📱 **Modern User Experience**
-- **Drag & drop file upload** with instant feedback
-- **Real-time import progress** with detailed metrics
-- **Responsive design** works on desktop and mobile
-- **Toast notifications** for clear user feedback
-- **Error recovery** with automatic retry logic
+**Secure setup - tokens stay on server:**
+
+```bash
+# 1. Install frontend dependencies
+npm install
+
+# 2. Install server dependencies
+npm run server:install
+
+# 3. Setup server environment
+cp server/.env.example server/.env
+# Edit server/.env with your Baserow credentials
+
+# 4. Setup frontend environment
+cp .env.example .env
+# Edit .env to enable proxy mode
+
+# 5. Start both frontend and server
+npm run dev:full
+```
+
+### Option 2: Direct Integration (Quick Development) ⚡
+
+**Direct connection - faster setup:**
+
+```bash
+npm install
+npm run dev
+```
+
+### Environment Setup
+
+#### For Proxy Server Mode (Recommended)
+
+Frontend `.env`:
+```env
+VITE_PROXY_URL=http://localhost:3001
+VITE_USE_PROXY=true
+```
+
+Server `server/.env`:
+```env
+BASEROW_API_TOKEN=your_api_token
+BASEROW_USERNAME=your_username@example.com
+BASEROW_PASSWORD=your_password
+PORT=3001
+FRONTEND_URL=http://localhost:5173
+```
+
+#### For Direct Integration Mode
+
+Frontend `.env`:
+```env
+VITE_USE_PROXY=false
+VITE_BASEROW_API_TOKEN=your_api_token
+VITE_BASEROW_USERNAME=your_username  
+VITE_BASEROW_PASSWORD=your_password
+```
 
 ## 🏗 Architecture
 
-### Direct API Integration
+### Proxy Server Mode (Production) 🔒
+```
+Browser App ──HTTP──> Proxy Server ──HTTPS──> Baserow API
+     ↓                      ↑
+IndexedDB Storage    Secure Token Storage
+```
+
+### Direct Integration Mode (Development) ⚡
 ```
 Browser App ──HTTPS──> Baserow API
      ↓
-IndexedDB Storage (2GB+)
+ IndexedDB Storage (2GB+)
 ```
-
 - JWT authentication with auto-refresh
-- Fallback to API token authentication
+- Multiple fallback auth methods
 - Native browser storage for large files
-- CORS-compliant direct API access
 
 ### Problem Solved
 - **Before**: Page refresh = data loss, limited file size support, manual column mapping
@@ -64,7 +115,7 @@ src/
 │       ├── input.tsx
 │       ├── progress.tsx
 │       ├── searchable-select.tsx
-│       └── select.tsx
+│       └── ...more
 ├── utils/
 │   ├── baserowApi.ts          # Direct Baserow API integration
 │   ├── fileStorage.ts         # IndexedDB file management  
@@ -100,7 +151,7 @@ The application implements **custom CSV parsing** without external dependencies:
 ### Advanced Features
 - **Parallel Batch Processing**: Up to 6 concurrent batches (1200 records at once)
 - **Smart Token Management**: JWT auto-refresh with 15-minute buffer
-- **Fallback Authentication**: Multiple auth methods (JWT, API token)
+- **Fallback Authentication**: Multiple auth methods (JWT, API token, username/password)
 - **Import Cancellation**: Cancel long-running imports with cleanup
 
 ## 🏗 Technology Stack
@@ -111,6 +162,7 @@ The application implements **custom CSV parsing** without external dependencies:
 - **Storage**: IndexedDB for large file persistence
 - **Forms**: React Hook Form + Zod validation
 - **Icons**: Lucide React
+- **State Management**: React Query for server state
 
 ## ⚡ Performance Optimizations
 
@@ -126,8 +178,6 @@ File Upload → IndexedDB Storage → Header Analysis → Column Mapping
                      ↓
 Batch Creation → 6 Parallel Batches → Baserow API → Progress Tracking
 ```
-
-**Bundle Size**: 362KB gzipped - optimized for fast loading
 
 ## 🚀 Getting Started
 
@@ -225,6 +275,7 @@ The application connects directly to Baserow's REST API using:
 - Fallback authentication methods for reliability
 
 ### Storage Strategy
+- **SessionStorage**: Quick access for current session data and metadata
 - **IndexedDB**: Persistent storage for large files (2GB+ capacity)
 - **Memory Cache**: Fast access for frequently used data during processing
 - **Automatic Cleanup**: Old files removed to prevent storage bloat
@@ -245,9 +296,9 @@ The application connects directly to Baserow's REST API using:
 
 - Environment variable configuration prevents credential exposure
 - JWT tokens are auto-refreshed before expiration with secure caching
+- No sensitive data logged to console in production
 - Direct HTTPS communication ensures data security
 - Client-side processing keeps data private until upload
-- No sensitive data logged to console in production
 
 ## 📈 Future Enhancements
 

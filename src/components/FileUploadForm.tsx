@@ -120,8 +120,6 @@ const FileUploadForm = () => {
         file: formData.file!,
       });
 
-      console.log('Upload completed successfully');
-
       toast({
         title: "Upload erfolgreich",
         description: "Ihre Daten wurden erfolgreich hochgeladen.",

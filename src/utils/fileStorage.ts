@@ -134,7 +134,6 @@ class FileStorageManager {
 
       return fileData.id;
     } catch (error) {
-      console.error('❌ Failed to store file in IndexedDB:', error);
       throw error;
     }
   }
@@ -145,7 +144,6 @@ class FileStorageManager {
       
       // Check if the object store exists
       if (!db.objectStoreNames.contains(this.storeName)) {
-        console.log('📁 IndexedDB object store not yet created');
         return null;
       }
 

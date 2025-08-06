@@ -1,4 +1,5 @@
 import { fileStorage, isIndexedDBAvailable } from './fileStorage';
+import { API_CONFIG, getApiConfig } from './apiConfig';
 
 interface UploadData {
   vorname: string;
@@ -8,18 +9,132 @@ interface UploadData {
   file: File;
 }
 
-// Configuration - Load from environment variables for security
+// Configuration - Now using proxy server for secure token handling
 const BASEROW_CONFIG = {
-  jwtToken: import.meta.env.VITE_BASEROW_JWT_TOKEN || '',
-  apiToken: import.meta.env.VITE_BASEROW_API_TOKEN || '',
+  // These will be fetched from proxy server instead of environment variables
+  jwtToken: '',
+  apiToken: '',
   tableId: '787',
   targetTableId: '790',
-  baseUrl: 'https://baserow.app-inventor.org',
+  baseUrl: () => {
+    const config = getApiConfig();
+    return config.isProxyEnabled ? config.proxyBaseUrl : 'https://baserow.app-inventor.org';
+  },
   databaseId: '207',
-  // JWT Authentication credentials - Load from environment
-  username: import.meta.env.VITE_BASEROW_USERNAME || '',
-  password: import.meta.env.VITE_BASEROW_PASSWORD || ''
+  // These are no longer needed in frontend when using proxy
+  username: '',
+  password: ''
 };
+
+// Helper function to make API calls through proxy or direct
+const makeApiCall = async (endpoint: string, options: RequestInit = {}) => {
+  const config = getApiConfig();
+  
+  if (config.isProxyEnabled) {
+    // Use proxy server - tokens are handled server-side
+    const proxyUrl = `${config.proxyBaseUrl}/api/baserow${endpoint}`;
+    return fetch(proxyUrl, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+      }
+    });
+  } else {
+    // Direct API call - use API token for most operations
+    const directUrl = `https://baserow.app-inventor.org/api${endpoint}`;
+    const apiToken = import.meta.env.VITE_BASEROW_API_TOKEN || '';
+    
+    if (!apiToken) {
+      throw new Error('Missing VITE_BASEROW_API_TOKEN in environment variables');
+    }
+    
+    return fetch(directUrl, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Token ${apiToken}`,
+        ...options.headers
+      }
+    });
+  }
+};
+
+// Helper function for operations that require JWT tokens (like table/database operations)
+const makeJWTApiCall = async (endpoint: string, options: RequestInit = {}) => {
+  const config = getApiConfig();
+  
+  if (config.isProxyEnabled) {
+    // Use proxy server - tokens are handled server-side
+    const proxyUrl = `${config.proxyBaseUrl}/api/baserow${endpoint}`;
+    return fetch(proxyUrl, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+      }
+    });
+  } else {
+    // Direct API call - use JWT token for table operations
+    const directUrl = `https://baserow.app-inventor.org/api${endpoint}`;
+    const token = await getJWTToken();
+    return fetch(directUrl, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `JWT ${token}`,
+        ...options.headers
+      }
+    });
+  }
+};
+
+// Helper function for file uploads (special handling for FormData)
+const makeFileUploadCall = async (endpoint: string, formData: FormData, signal?: AbortSignal) => {
+  const config = getApiConfig();
+  if (config.isProxyEnabled) {
+    // Use proxy server - tokens are handled server-side
+    const proxyUrl = `${config.proxyBaseUrl}/api/baserow${endpoint}`;
+    return fetch(proxyUrl, {
+      method: 'POST',
+      body: formData,
+      signal
+    });
+  } else {
+    // Direct API call (fallback for development)
+    const directUrl = `https://baserow.app-inventor.org/api${endpoint}`;
+    const apiToken = import.meta.env.VITE_BASEROW_API_TOKEN || '';
+    return fetch(directUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Token ${apiToken}`,
+      },
+      body: formData,
+      signal
+    });
+  }
+};
+
+// Initialize configuration from proxy server
+const initializeConfig = async () => {
+  const config = getApiConfig();
+  if (config.isProxyEnabled) {
+    try {
+      const response = await fetch(`${config.proxyBaseUrl}/api/config`);
+      if (response.ok) {
+        const serverConfig = await response.json();
+        BASEROW_CONFIG.tableId = serverConfig.tableId;
+        BASEROW_CONFIG.targetTableId = serverConfig.targetTableId;
+        BASEROW_CONFIG.databaseId = serverConfig.databaseId;
+      }
+    } catch (error) {
+      console.warn('Failed to fetch config from proxy server:', error);
+    }
+  }
+};
+
+// Initialize config when module loads
+initializeConfig();
 
 // Performance Configuration for Parallel Processing 🚀
 const PERFORMANCE_CONFIG = {
@@ -105,16 +220,11 @@ export const recoverFullFileContentIfNeeded = async (
   
   // Check if we have the file URL to fetch from
   if (!fileInfo.file?.url) {
-    console.warn('⚠️ No file URL available for content recovery');
-    console.warn('💡 Using truncated content - this will result in incomplete import');
     return currentContent;
   }
 
   try {
-    console.log('🌐 Fetching full file content directly from Baserow...');
-    
     // First try direct fetch from Baserow API with JWT token
-    console.log('🔑 Attempting direct Baserow file access...');
     
     let response: Response;
     let fetchController = new AbortController();
@@ -137,12 +247,12 @@ export const recoverFullFileContentIfNeeded = async (
       clearTimeout(timeoutId);
       
       if (response.ok) {
-        console.log('✅ Direct Baserow access successful!');
+        // Success
       } else {
         throw new Error(`Direct access failed: ${response.status}`);
       }
     } catch (directError) {
-      console.log('⚠️ Direct access failed, trying with API token...');
+      // Fallback: Try with API token instead of JWT
       clearTimeout(timeoutId);
       
       // Fallback: Try with API token instead of JWT
@@ -150,10 +260,11 @@ export const recoverFullFileContentIfNeeded = async (
       timeoutId = setTimeout(() => fetchController.abort(), 300000);
       
       try {
+        const apiToken = import.meta.env.VITE_BASEROW_API_TOKEN || '';
         response = await fetch(fileInfo.file.url, {
           method: 'GET',
           headers: {
-            'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
+            'Authorization': `Token ${apiToken}`,
             'Accept': 'text/csv,text/plain,application/octet-stream,*/*',
           },
           signal: fetchController.signal
@@ -162,12 +273,12 @@ export const recoverFullFileContentIfNeeded = async (
         clearTimeout(timeoutId);
         
         if (response.ok) {
-          console.log('✅ API token access successful!');
+          // Success
         } else {
           throw new Error(`API token access failed: ${response.status}`);
         }
       } catch (apiTokenError) {
-        console.log('⚠️ API token access failed, trying without authorization...');
+        // Last resort: Try without authorization (for public files)
         clearTimeout(timeoutId);
         
         // Last resort: Try without authorization (for public files)
@@ -187,7 +298,6 @@ export const recoverFullFileContentIfNeeded = async (
         if (!response.ok) {
           throw new Error(`All direct access methods failed. Status: ${response.status}`);
         }
-        console.log('✅ Public access successful!');
       }
     }
 
@@ -209,12 +319,8 @@ export const recoverFullFileContentIfNeeded = async (
     const fullContent = await response.text();
     const fullLines = fullContent.split(/\r?\n/).filter(line => line.trim());
     
-    console.log('✅ Successfully recovered full file content directly from Baserow!');
-    console.log(`📊 Retrieved ${fullLines.length} lines (${(fullContent.length / 1024 / 1024).toFixed(2)}MB)`);
-    
     // Verify that we actually got more content
     if (fullContent.length <= currentContent.length) {
-      console.warn('⚠️ Fetched content is not larger than current content - using current content');
       return currentContent;
     }
     
@@ -225,12 +331,7 @@ export const recoverFullFileContentIfNeeded = async (
     // Last resort: Try to get the file data from the table row itself
     console.log('🔄 Attempting last resort: fetching file info from table row...');
     try {
-      const jwtToken = await getJWTToken();
-      const rowResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.tableId}/${fileInfo.recordId}/?user_field_names=true`, {
-        headers: {
-          'Authorization': `JWT ${jwtToken}`,
-        },
-      });
+      const rowResponse = await makeApiCall(`/database/rows/table/${BASEROW_CONFIG.tableId}/${fileInfo.recordId}/?user_field_names=true`);
       
       if (rowResponse.ok) {
         const rowData = await rowResponse.json();
@@ -240,10 +341,12 @@ export const recoverFullFileContentIfNeeded = async (
           const latestFile = fileField[0];
           console.log('🔄 Found file in row data, attempting fresh download...');
           
-          // Try downloading with the fresh file URL
+          // Try downloading with the fresh file URL (direct file download, not through proxy)
+          const config = getApiConfig();
+          const jwtToken = config.isProxyEnabled ? '' : await getJWTToken();
           const freshResponse = await fetch(latestFile.url, {
             headers: {
-              'Authorization': `JWT ${jwtToken}`,
+              ...(jwtToken ? { 'Authorization': `JWT ${jwtToken}` } : {}),
               'Accept': 'text/csv,text/plain,application/octet-stream,*/*',
             },
           });
@@ -287,72 +390,44 @@ export const clearJWTTokenCache = () => {
   CACHED_JWT_TOKEN = null;
   JWT_TOKEN_EXPIRES_AT = 0;
   LAST_TOKEN_REFRESH = 0;
-  console.log('🗑️ JWT token cache cleared');
-};
-
-// Manual token refresh function for testing/debugging
-export const forceTokenRefresh = async (): Promise<string> => {
-  console.log('🔄 Forcing token refresh...');
-  clearJWTTokenCache();
-  return await getJWTToken();
 };
 
 // Check if we have valid authentication credentials
 export const validateAuthCredentials = (): boolean => {
-  const hasCredentials = !!(BASEROW_CONFIG.username && BASEROW_CONFIG.password);
-  if (!hasCredentials) {
-    console.error('❌ Missing authentication credentials in environment variables');
-  }
-  return hasCredentials;
-};
-
-// Debug function to check authentication status
-export const getAuthStatus = () => {
-  const now = Date.now();
-  return {
-    hasCredentials: !!(BASEROW_CONFIG.username && BASEROW_CONFIG.password),
-    hasCachedToken: !!CACHED_JWT_TOKEN,
-    tokenExpiresAt: new Date(JWT_TOKEN_EXPIRES_AT).toISOString(),
-    tokenExpiresIn: Math.max(0, JWT_TOKEN_EXPIRES_AT - now),
-    isTokenExpired: JWT_TOKEN_EXPIRES_AT <= (now + JWT_TOKEN_BUFFER_MS),
-    username: BASEROW_CONFIG.username ? `${BASEROW_CONFIG.username.substring(0, 3)}***` : 'NOT_SET',
-    hasPassword: !!BASEROW_CONFIG.password,
-    lastRefresh: LAST_TOKEN_REFRESH ? new Date(LAST_TOKEN_REFRESH).toISOString() : 'NEVER',
-    tokenCacheStatus: {
-      cached: !!CACHED_JWT_TOKEN,
-      expiresInMinutes: Math.round(Math.max(0, JWT_TOKEN_EXPIRES_AT - now) / 60000),
-      willExpireSoon: JWT_TOKEN_EXPIRES_AT <= (now + JWT_TOKEN_BUFFER_MS),
-      bufferMinutes: JWT_TOKEN_BUFFER_MS / 60000
-    }
-  };
-};
-
-// Enhanced debugging function to log token status before operations
-const logTokenStatus = (operation: string) => {
-  const status = getAuthStatus();
-  const now = Date.now();
-  const expiresInMinutes = Math.round(Math.max(0, JWT_TOKEN_EXPIRES_AT - now) / 60000);
+  const config = getApiConfig();
   
-  // Only log if there are issues or if we're close to expiry
-  if (status.isTokenExpired || expiresInMinutes <= 20) {
-    console.log(`🔍 Token Status before ${operation}:`, {
-      hasCachedToken: status.hasCachedToken,
-      expiresInMinutes: expiresInMinutes,
-      willExpireSoon: status.tokenCacheStatus.willExpireSoon,
-      isExpired: status.isTokenExpired,
-      lastRefresh: status.lastRefresh
-    });
+  if (config.isProxyEnabled) {
+    // In proxy mode, credentials are handled server-side
+    return true;
+  } else {
+    // In direct mode, check for API token or username/password
+    const hasApiToken = !!(import.meta.env.VITE_BASEROW_API_TOKEN);
+    const hasCredentials = !!(import.meta.env.VITE_BASEROW_USERNAME && import.meta.env.VITE_BASEROW_PASSWORD);
+    
+    if (!hasApiToken && !hasCredentials) {
+      console.error('❌ Missing authentication credentials: need either VITE_BASEROW_API_TOKEN or (VITE_BASEROW_USERNAME + VITE_BASEROW_PASSWORD)');
+      return false;
+    }
+    
+    return true;
   }
 };
 
-// Function to get a fresh JWT token with enhanced caching and error handling
+// Function to get a fresh JWT token - now handled by proxy server
 const getJWTToken = async (): Promise<string> => {
+  const config = getApiConfig();
+  if (config.isProxyEnabled) {
+    // When using proxy, tokens are handled server-side
+    // Just return a placeholder since proxy handles authentication
+    return 'PROXY_HANDLED';
+  }
+  
+  // Fallback for direct API access (development mode)
   try {
     const now = Date.now();
     
     // Check if we have a valid cached token with buffer
     if (CACHED_JWT_TOKEN && JWT_TOKEN_EXPIRES_AT > (now + JWT_TOKEN_BUFFER_MS)) {
-      // Log remaining time for monitoring
       const remainingMinutes = Math.round((JWT_TOKEN_EXPIRES_AT - now) / 60000);
       if (remainingMinutes <= 15) {
         console.log(`🔑 Using cached token (expires in ${remainingMinutes} minutes)`);
@@ -373,19 +448,22 @@ const getJWTToken = async (): Promise<string> => {
     CACHED_JWT_TOKEN = null;
     JWT_TOKEN_EXPIRES_AT = 0;
     
-    // Validate that we have credentials
-    if (!BASEROW_CONFIG.username || !BASEROW_CONFIG.password) {
+    // For direct access, we'd need credentials from env variables
+    const username = import.meta.env.VITE_BASEROW_USERNAME || '';
+    const password = import.meta.env.VITE_BASEROW_PASSWORD || '';
+    
+    if (!username || !password) {
       throw new Error('Missing authentication credentials. Please check VITE_BASEROW_USERNAME and VITE_BASEROW_PASSWORD environment variables.');
     }
     
-    const response = await fetch(`${BASEROW_CONFIG.baseUrl}/api/user/token-auth/`, {
+    const response = await fetch(`https://baserow.app-inventor.org/api/user/token-auth/`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        username: BASEROW_CONFIG.username,
-        password: BASEROW_CONFIG.password,
+        username: username,
+        password: password,
       }),
     });
 
@@ -477,12 +555,8 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
         await deleteTable(existingRecord.CreatedTableId);
       }
       
-      const updateResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.tableId}/${existingRecord.id}/?user_field_names=true`, {
+      const updateResponse = await makeApiCall(`/database/rows/table/${BASEROW_CONFIG.tableId}/${existingRecord.id}/?user_field_names=true`, {
         method: 'PATCH',
-        headers: {
-          'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
-          'Content-Type': 'application/json',
-        },
         body: JSON.stringify({
           Vorname: data.vorname,
           Nachname: data.nachname,
@@ -662,7 +736,6 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
     }
 
     // First, upload the file to Baserow with timeout handling
-    console.log('Uploading file to Baserow...');
     const fileFormData = new FormData();
     fileFormData.append('file', data.file);
 
@@ -670,14 +743,7 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
     const timeoutId = setTimeout(() => controller.abort(), 120000); // Reduced from 5 minutes to 2 minutes
 
     try {
-      const fileUploadResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/user-files/upload-file/`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
-        },
-        body: fileFormData,
-        signal: controller.signal,
-      });
+      const fileUploadResponse = await makeFileUploadCall('/user-files/upload-file/', fileFormData, controller.signal);
 
       clearTimeout(timeoutId);
 
@@ -688,21 +754,17 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
       }
 
       const fileUploadResult = await fileUploadResponse.json();
-      console.log('File uploaded successfully:', fileUploadResult);
       
       // Process file in chunks for large files with error handling
-      console.log('Processing file content for storage...');
       let fileContent = '';
       try {
         fileContent = await processFileForStorage(data.file); // Use storage-optimized processing
-        console.log('File content processed successfully, length:', fileContent.length);
       } catch (processingError) {
         console.error('Error processing file content:', processingError);
         throw new Error('Fehler beim Verarbeiten der Datei. Die Datei ist möglicherweise zu groß oder beschädigt.');
       }
       
       // Then, create a row in the table with the form data and file reference
-      console.log('Creating database record...');
       const rowData = {
         Vorname: data.vorname,
         Nachname: data.nachname,
@@ -713,12 +775,8 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
         CreatedTableId: null, // Will be updated after table creation
       };
 
-      const rowResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.tableId}/?user_field_names=true`, {
+      const rowResponse = await makeApiCall(`/database/rows/table/${BASEROW_CONFIG.tableId}/?user_field_names=true`, {
         method: 'POST',
-        headers: {
-          'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
-          'Content-Type': 'application/json',
-        },
         body: JSON.stringify(rowData),
       });
 
@@ -730,7 +788,6 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
       }
 
       const rowResult = await rowResponse.json();
-      console.log('Successfully created row:', rowResult);
       
       // Store file info in session for the mapping page with size check
       const isLargeFile = data.file.size > 10 * 1024 * 1024; // 10MB threshold
@@ -1137,11 +1194,7 @@ const processLargeFileStreaming = async (file: File): Promise<string> => {
 // Helper function to find existing records
 const findExistingRecord = async (vorname: string, nachname: string, email: string, company: string) => {
   try {
-    const response = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.tableId}/?user_field_names=true`, {
-      headers: {
-        'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
-      },
-    });
+    const response = await makeApiCall(`/database/rows/table/${BASEROW_CONFIG.tableId}/?user_field_names=true`);
 
     if (!response.ok) {
       return null;
@@ -1162,32 +1215,20 @@ const findExistingRecord = async (vorname: string, nachname: string, email: stri
   }
 };
 
-// Create a new table using fresh JWT token with retry logic
+// Create a new table using appropriate authentication method
 export const createNewTable = async (tableName: string, columns: string[]): Promise<string> => {
   let attempt = 0;
   const maxAttempts = 2;
   
   while (attempt < maxAttempts) {
     try {
-      // Log token status before operation
-      logTokenStatus('table creation');
-      
-      // Get fresh JWT token for each attempt with enhanced buffer
-      console.log(`🔑 Getting fresh JWT token for table creation (attempt ${attempt + 1}/${maxAttempts})`);
-      const jwtToken = await ensureFreshToken(); // Use ensureFreshToken instead of getJWTToken
-      
       // Create table structure
       const tableData = {
         name: tableName
       };
 
-      console.log('Creating table with name:', tableName);
-      const tableResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/tables/database/${BASEROW_CONFIG.databaseId}/`, {
+      const tableResponse = await makeJWTApiCall(`/database/tables/database/${BASEROW_CONFIG.databaseId}/`, {
         method: 'POST',
-        headers: {
-          'Authorization': `JWT ${jwtToken}`,
-          'Content-Type': 'application/json',
-        },
         body: JSON.stringify(tableData),
       });
 
@@ -1198,8 +1239,7 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
         
         // If it's a 401 (token expired) and we haven't retried yet, clear cache and retry
         if (tableResponse.status === 401 && attempt < maxAttempts - 1) {
-          console.log('🔄 Token expired during table creation, clearing cache and retrying...');
-          clearJWTTokenCache(); // Use the proper cache clearing function
+          clearJWTTokenCache(); // Clear cache for retry
           attempt++;
           continue;
         }
@@ -1215,12 +1255,12 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
       }
 
       const tableResult = await tableResponse.json();
-      console.log('Table created successfully:', tableResult);
 
       // Minimal wait for table creation
-      await new Promise(resolve => setTimeout(resolve, 50)); // Reduced from 150ms to 50ms
+      await new Promise(resolve => setTimeout(resolve, 50));
 
-      // Handle the primary "Name" field and create other columns
+      // Handle the primary "Name" field and create other columns  
+      const jwtToken = await getJWTToken(); // Get JWT token for table operations
       await setupTableColumns(tableResult.id, columns, jwtToken);
 
       return tableResult.id.toString();
@@ -1263,20 +1303,16 @@ const setupTableColumns = async (tableId: string, columns: string[], initialJwtT
     console.log('Setting up table columns for table:', tableId, 'with columns:', columns);
     
     // Get current table fields
-    let fieldsResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
-      headers: {
-        'Authorization': `JWT ${jwtToken}`,
-      },
+    let fieldsResponse = await makeJWTApiCall(`/database/fields/table/${tableId}/`, {
+      method: 'GET'
     });
 
     if (!fieldsResponse.ok) {
       const wasRefreshed = await refreshTokenIfNeeded(fieldsResponse);
       if (wasRefreshed) {
         // Retry with fresh token
-        fieldsResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
-          headers: {
-            'Authorization': `JWT ${jwtToken}`,
-          },
+        fieldsResponse = await makeJWTApiCall(`/database/fields/table/${tableId}/`, {
+          method: 'GET'
         });
       }
       
@@ -1295,12 +1331,8 @@ const setupTableColumns = async (tableId: string, columns: string[], initialJwtT
       // Rename the primary field to the first CSV column
       console.log(`Renaming primary field ${primaryField.name} to ${columns[0]}`);
       
-      let renameResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/${primaryField.id}/`, {
+      let renameResponse = await makeJWTApiCall(`/database/fields/${primaryField.id}/`, {
         method: 'PATCH',
-        headers: {
-          'Authorization': `JWT ${jwtToken}`,
-          'Content-Type': 'application/json',
-        },
         body: JSON.stringify({
           name: columns[0]
         }),
@@ -1310,12 +1342,8 @@ const setupTableColumns = async (tableId: string, columns: string[], initialJwtT
         const wasRefreshed = await refreshTokenIfNeeded(renameResponse);
         if (wasRefreshed) {
           // Retry with fresh token
-          renameResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/${primaryField.id}/`, {
+          renameResponse = await makeJWTApiCall(`/database/fields/${primaryField.id}/`, {
             method: 'PATCH',
-            headers: {
-              'Authorization': `JWT ${jwtToken}`,
-              'Content-Type': 'application/json',
-            },
             body: JSON.stringify({
               name: columns[0]
             }),
@@ -1340,22 +1368,16 @@ const setupTableColumns = async (tableId: string, columns: string[], initialJwtT
       if (field.id !== primaryField?.id && (field.name === 'Notes' || field.name === 'Active')) {
         console.log(`Deleting default field: ${field.name}`);
         
-        let deleteResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/${field.id}/`, {
-          method: 'DELETE',
-          headers: {
-            'Authorization': `JWT ${jwtToken}`,
-          },
+        let deleteResponse = await makeJWTApiCall(`/database/fields/${field.id}/`, {
+          method: 'DELETE'
         });
         
         if (!deleteResponse.ok) {
           const wasRefreshed = await refreshTokenIfNeeded(deleteResponse);
           if (wasRefreshed) {
             // Retry with fresh token
-            deleteResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/${field.id}/`, {
-              method: 'DELETE',
-              headers: {
-                'Authorization': `JWT ${jwtToken}`,
-              },
+            deleteResponse = await makeJWTApiCall(`/database/fields/${field.id}/`, {
+              method: 'DELETE'
             });
           }
         }
@@ -1402,12 +1424,8 @@ const createTableColumn = async (tableId: string, columnName: string, initialJwt
       type: 'text'
     };
 
-    let columnResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
+    let columnResponse = await makeJWTApiCall(`/database/fields/table/${tableId}/`, {
       method: 'POST',
-      headers: {
-        'Authorization': `JWT ${jwtToken}`,
-        'Content-Type': 'application/json',
-      },
       body: JSON.stringify(columnData),
     });
 
@@ -1419,12 +1437,8 @@ const createTableColumn = async (tableId: string, columnName: string, initialJwt
         jwtToken = await ensureFreshToken(); // Use ensureFreshToken for consistency
         
         // Retry with fresh token
-        columnResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
+        columnResponse = await makeJWTApiCall(`/database/fields/table/${tableId}/`, {
           method: 'POST',
-          headers: {
-            'Authorization': `JWT ${jwtToken}`,
-            'Content-Type': 'application/json',
-          },
           body: JSON.stringify(columnData),
         });
       }
@@ -1450,11 +1464,8 @@ const deleteTable = async (tableId: string) => {
   try {
     const jwtToken = await ensureFreshToken(); // Use ensureFreshToken for reliable deletion
     
-    const response = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/tables/${tableId}/`, {
-      method: 'DELETE',
-      headers: {
-        'Authorization': `JWT ${jwtToken}`,
-      },
+    const response = await makeJWTApiCall(`/database/tables/${tableId}/`, {
+      method: 'DELETE'
     });
 
     if (response.ok) {
@@ -1468,12 +1479,8 @@ const deleteTable = async (tableId: string) => {
 // Update record with created table ID
 const updateRecordWithTableId = async (recordId: number, tableId: string) => {
   try {
-    const response = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${BASEROW_CONFIG.tableId}/${recordId}/?user_field_names=true`, {
+    const response = await makeApiCall(`/database/rows/table/${BASEROW_CONFIG.tableId}/${recordId}/?user_field_names=true`, {
       method: 'PATCH',
-      headers: {
-        'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
-        'Content-Type': 'application/json',
-      },
       body: JSON.stringify({
         CreatedTableId: tableId,
       }),
@@ -1490,17 +1497,20 @@ const updateRecordWithTableId = async (recordId: number, tableId: string) => {
 // Get table schema from Baserow
 export const getTableSchema = async (tableId: string) => {
   try {
-    const response = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
-      headers: {
-        'Authorization': `Token ${BASEROW_CONFIG.apiToken}`,
-      },
-    });
+    const response = await makeApiCall(`/database/fields/table/${tableId}/`);
 
     if (!response.ok) {
-      throw new Error('Failed to fetch table schema');
+      const errorText = await response.text();
+      console.error('❌ Table schema fetch failed:', {
+        status: response.status,
+        statusText: response.statusText,
+        errorText: errorText.substring(0, 200)
+      });
+      throw new Error(`Failed to fetch table schema: ${response.status} - ${errorText.substring(0, 100)}`);
     }
 
     const fields = await response.json();
+    
     return fields.map((field: any) => ({
       id: field.id,
       name: field.name,
@@ -1639,9 +1649,20 @@ export const processImportData = async (
       });
     }
     
-    // Validate authentication credentials before starting
-    if (!validateAuthCredentials()) {
-      throw new Error('Missing authentication credentials. Please check your environment variables (VITE_BASEROW_USERNAME and VITE_BASEROW_PASSWORD).');
+    // For import operations that create tables, we need JWT tokens (username/password)
+    // For regular data operations, API tokens are sufficient
+    console.log('🔑 Validating authentication for import operations...');
+    const config = getApiConfig();
+    
+    if (config.isProxyEnabled) {
+      console.log('✅ Using proxy mode - authentication handled server-side');
+    } else {
+      // Direct mode - need JWT credentials for table creation
+      const hasJwtCredentials = !!(import.meta.env.VITE_BASEROW_USERNAME && import.meta.env.VITE_BASEROW_PASSWORD);
+      if (!hasJwtCredentials) {
+        throw new Error('Import operations require JWT authentication. Please set VITE_BASEROW_USERNAME and VITE_BASEROW_PASSWORD environment variables.');
+      }
+      console.log('✅ JWT credentials available for table creation');
     }
     
     // Test JWT token early to catch authentication issues
@@ -1835,11 +1856,8 @@ export const processImportData = async (
     if (defaultRows.length > 0) {
       console.warn(`🚨 Found ${defaultRows.length} default rows – cleaning up...`);
       for (const row of defaultRows) {
-        await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${tableId}/${row.id}/`, {
-          method: 'DELETE',
-          headers: {
-            'Authorization': `JWT ${cleanupToken}`
-          }
+        await makeApiCall(`/database/rows/table/${tableId}/${row.id}/`, {
+          method: 'DELETE'
         });
       }
       console.log(`✅ Deleted ${defaultRows.length} default rows from new table`);
@@ -2291,12 +2309,8 @@ const processBatchRecords = async (batch: any[], tableId: string, jwtToken: stri
         user_field_names: true
       };
       
-      const bulkResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${tableId}/batch/`, {
+      const bulkResponse = await makeApiCall(`/database/rows/table/${tableId}/batch/`, {
         method: 'POST',
-        headers: {
-          'Authorization': `JWT ${currentToken}`,
-          'Content-Type': 'application/json',
-        },
         body: JSON.stringify(bulkPayload),
       });
 
@@ -2320,12 +2334,8 @@ const processBatchRecords = async (batch: any[], tableId: string, jwtToken: stri
           currentToken = await getJWTToken();
           
           // Retry with fresh token
-          const retryBulkResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${tableId}/batch/`, {
+          const retryBulkResponse = await makeApiCall(`/database/rows/table/${tableId}/batch/`, {
             method: 'POST',
-            headers: {
-              'Authorization': `JWT ${currentToken}`,
-              'Content-Type': 'application/json',
-            },
             body: JSON.stringify(bulkPayload),
           });
           
@@ -2354,12 +2364,8 @@ const processBatchRecords = async (batch: any[], tableId: string, jwtToken: stri
         console.log('Retrying bulk operation without user_field_names flag...');
         bulkPayload = { items: batch, user_field_names: false };
         
-        const retryResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${tableId}/batch/`, {
+        const retryResponse = await makeApiCall(`/database/rows/table/${tableId}/batch/`, {
           method: 'POST',
-          headers: {
-            'Authorization': `JWT ${currentToken}`,
-            'Content-Type': 'application/json',
-          },
           body: JSON.stringify(bulkPayload),
         });
         
@@ -2451,12 +2457,9 @@ const processBatchRecords = async (batch: any[], tableId: string, jwtToken: stri
 const getFieldMappings = async (tableId: string, columnNames: string[]): Promise<Record<string, number>> => {
   try {
     console.log('Fetching field mappings for table:', tableId, 'columns:', columnNames);
-    const jwtToken = await getJWTToken();
     
-    const response = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/fields/table/${tableId}/`, {
-      headers: {
-        'Authorization': `JWT ${jwtToken}`,
-      },
+    const response = await makeJWTApiCall(`/database/fields/table/${tableId}/`, {
+      method: 'GET'
     });
 
     if (!response.ok) {
@@ -2544,19 +2547,12 @@ const parseCSVLine = (line: string): string[] => {
 };
 
 // Enhanced record creation with robust token refresh
-const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken: string, retryCount = 0) => {
+const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken?: string, retryCount = 0) => {
   const MAX_RETRIES = 1; // Allow one retry for token expiration
   
   try {
-    // Use fresh token for first attempt, provided token for retries
-    const tokenToUse = retryCount === 0 ? await ensureFreshToken() : jwtToken;
-    
-    const createResponse = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${tableId}/`, {
+    const createResponse = await makeApiCall(`/database/rows/table/${tableId}/`, {
       method: 'POST',
-      headers: {
-        'Authorization': `JWT ${tokenToUse}`,
-        'Content-Type': 'application/json',
-      },
       body: JSON.stringify(recordData),
     });
     
@@ -2565,9 +2561,8 @@ const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken
       
       // Handle token expiry for 401 errors
       if (createResponse.status === 401 && retryCount < MAX_RETRIES) {
-        console.log('🔑 Token expired in individual creation, getting fresh token...');
-        const freshToken = await getJWTToken();
-        return await createRecordInNewTable(tableId, recordData, freshToken, retryCount + 1);
+        console.log('🔑 Token expired in individual creation, retrying...');
+        return await createRecordInNewTable(tableId, recordData, jwtToken, retryCount + 1);
       }
       
       throw new Error(`HTTP ${createResponse.status}: ${errorText}`);
@@ -2600,10 +2595,8 @@ export const verifyRecordsCreated = async (tableId: string): Promise<any[]> => {
     while (hasMoreRecords && iterations < MAX_ITERATIONS) {
       console.log(`Fetching records batch ${iterations + 1} (offset: ${offset}, limit: ${LIMIT})...`);
       
-      const response = await fetch(`${BASEROW_CONFIG.baseUrl}/api/database/rows/table/${tableId}/?limit=${LIMIT}&offset=${offset}`, {
-        headers: {
-          'Authorization': `JWT ${jwtToken}`,
-        },
+      const response = await makeApiCall(`/database/rows/table/${tableId}/?limit=${LIMIT}&offset=${offset}`, {
+        method: 'GET'
       });
 
       if (!response.ok) {

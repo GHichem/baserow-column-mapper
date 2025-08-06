@@ -85,9 +85,6 @@ const ColumnMappingPage = () => {
 
   const handleMappingComplete = async (mappings: Record<string, string>, progressCallback?: (progress: ProgressInfo) => void) => {
     try {
-      console.log('Column mappings completed:', mappings);
-      console.log('File info:', uploadedFileInfo);
-      
       // Process the actual file data with mappings and create new table
       const results = await processImportData(mappings, progressCallback);
       
@@ -110,7 +107,6 @@ const ColumnMappingPage = () => {
       
       // Don't show error toast for user cancellation
       if (error instanceof Error && error.message === 'Import cancelled by user') {
-        console.log('Import was cancelled by user - not showing error');
         return;
       }
       

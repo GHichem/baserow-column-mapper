@@ -1,0 +1,26 @@
+{
+  "name": "baserow-column-mapper-backend",
+  "version": "1.0.0",
+  "description": "Secure backend proxy for Baserow Column Mapper",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "axios": "^1.11.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "form-data": "^4.0.4",
+    "multer": "^1.4.5-lts.1"
+  },
+  "keywords": [
+    "baserow",
+    "proxy",
+    "security"
+  ],
+  "author": "",
+  "license": "MIT"
+}
