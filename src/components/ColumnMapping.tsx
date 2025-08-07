@@ -103,7 +103,6 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
       });
       
     } catch (error) {
-      console.error('Error loading column data:', error);
       toast({
         title: "Fehler",
         description: "Fehler beim Laden der Spaltendaten. Bitte versuchen Sie es erneut.",
@@ -260,14 +259,12 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
       await onMappingComplete(finalMappings, progressCallback);
       
     } catch (error) {
-      console.error('Import error:', error);
       setShowProgressDialog(false);
       setHighlightUnmapped(false);
       setHighlightedColumns(new Set());
       
       // Don't show error toast for user cancellation
       if (error instanceof Error && error.message === 'Import cancelled by user') {
-        console.log('Import was cancelled by user - not showing error toast');
         return;
       }
       

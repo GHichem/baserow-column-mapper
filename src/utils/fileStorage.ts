@@ -152,7 +152,6 @@ class FileStorageManager {
       
       // Check if the recordId index exists
       if (!store.indexNames.contains('recordId')) {
-        console.log('📁 IndexedDB recordId index not yet created');
         return null;
       }
       
@@ -167,14 +166,12 @@ class FileStorageManager {
           } else {
             // Get the most recent file
             const latestFile = files.sort((a, b) => b.metadata.timestamp - a.metadata.timestamp)[0];
-            console.log(`✅ Retrieved file from IndexedDB: ${latestFile.id} (${(latestFile.content.length / 1024 / 1024).toFixed(2)}MB)`);
             resolve(latestFile.content);
           }
         };
         request.onerror = () => reject(request.error);
       });
     } catch (error) {
-      console.error('❌ Failed to retrieve file from IndexedDB:', error);
       return null;
     }
   }
@@ -185,7 +182,6 @@ class FileStorageManager {
       
       // Check if the object store exists
       if (!db.objectStoreNames.contains(this.storeName)) {
-        console.log('📁 IndexedDB object store not yet created, nothing to delete');
         return;
       }
 
@@ -194,7 +190,6 @@ class FileStorageManager {
       
       // Check if the recordId index exists
       if (!store.indexNames.contains('recordId')) {
-        console.log('📁 IndexedDB recordId index not yet created, nothing to delete');
         return;
       }
       
@@ -215,10 +210,8 @@ class FileStorageManager {
       }
 
       if (files.length > 0) {
-        console.log(`✅ Deleted ${files.length} files for record ${recordId} from IndexedDB`);
       }
     } catch (error) {
-      console.error('❌ Failed to delete file from IndexedDB:', error);
     }
   }
 
@@ -228,7 +221,6 @@ class FileStorageManager {
       
       // Check if the object store exists before proceeding
       if (!db.objectStoreNames.contains(this.storeName)) {
-        console.log('📁 IndexedDB object store not yet created, skipping cleanup');
         return;
       }
 
@@ -237,7 +229,6 @@ class FileStorageManager {
       
       // Check if the timestamp index exists
       if (!store.indexNames.contains('timestamp')) {
-        console.log('📁 IndexedDB timestamp index not yet created, skipping cleanup');
         return;
       }
       
@@ -257,7 +248,6 @@ class FileStorageManager {
             cursor.continue();
           } else {
             if (deletedCount > 0) {
-              console.log(`✅ Cleaned up ${deletedCount} old files from IndexedDB`);
             }
             resolve();
           }
@@ -268,7 +258,6 @@ class FileStorageManager {
     } catch (error) {
       // Only log error if it's not a "not found" error during initial setup
       if (error instanceof Error && !error.message.includes('not found')) {
-        console.error('❌ Failed to cleanup old files:', error);
       }
     }
   }
@@ -283,7 +272,6 @@ class FileStorageManager {
         };
       }
     } catch (error) {
-      console.warn('Could not get storage info:', error);
     }
 
     return { used: 0, available: 0 };
@@ -293,7 +281,6 @@ class FileStorageManager {
     try {
       await this.openDB();
     } catch (error) {
-      console.warn('IndexedDB initialization failed:', error);
     }
   }
 }
@@ -326,12 +313,10 @@ if (typeof window !== 'undefined' && isIndexedDBAvailable()) {
       if (info.available > 0) {
         const usedMB = (info.used / 1024 / 1024).toFixed(2);
         const availableMB = (info.available / 1024 / 1024).toFixed(2);
-        console.log(`💾 Storage: ${usedMB}MB used / ${availableMB}MB available`);
       }
     } catch (error) {
       // Silently handle initialization errors to prevent console spam
       if (error instanceof Error && !error.message.includes('not found')) {
-        console.warn('⚠️ IndexedDB initialization warning:', error.message);
       }
     }
   }, 1000); // 1 second delay to ensure proper initialization

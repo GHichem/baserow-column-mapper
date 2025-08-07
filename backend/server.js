@@ -50,8 +50,6 @@ async function getFreshJwtToken() {
     });
 
     if (!response.ok) {
-      console.log(`🔐 Primary JWT endpoint failed: ${response.status}, trying alternative...`);
-      
       // Try alternative endpoint
       response = await fetch('https://baserow.app-inventor.org/api/auth/token/', {
         method: 'POST',
@@ -72,11 +70,8 @@ async function getFreshJwtToken() {
     const data = await response.json();
     jwtToken = data.access_token || data.token;
     jwtExpiry = Date.now() + (55 * 60 * 1000); // Refresh 5 minutes before expiry
-    
-    console.log('🔑 JWT token refreshed successfully');
     return jwtToken;
   } catch (error) {
-    console.error('❌ Failed to get JWT token:', error);
     throw error;
   }
 }
@@ -92,29 +87,12 @@ async function getValidJwtToken() {
 // Proxy all Baserow API calls
 app.all('/api/baserow/*', upload.single('file'), async (req, res) => {
   try {
-    console.log('🚨 ROUTE HIT! This log should always appear when /api/baserow/* is accessed');
-    console.log('🔍 Request method:', req.method);
-    console.log('🔍 Request headers:', req.headers);
-    
     const baserowPath = req.path.replace('/api/baserow', '');
     const baserowUrl = `https://baserow.app-inventor.org/api${baserowPath}`;
-    
-    console.log(`🔍 INCOMING REQUEST: ${req.method} ${req.path}`);
-    console.log(`🔍 Full URL: ${req.url}`);
-    console.log(`🔍 Original URL: ${req.originalUrl}`);
-    console.log(`🔍 Baserow path: ${baserowPath}`);
-    console.log(`🔍 Baserow URL: ${baserowUrl}`);
-
     // Check if this is a file upload
     const isFileUpload = req.file || req.path.includes('/user-files/upload-file');
     
     if (isFileUpload && req.file) {
-      console.log('📁 File upload detected:', {
-        filename: req.file.originalname,
-        size: req.file.size,
-        mimetype: req.file.mimetype
-      });
-      
       // Handle file upload with FormData
       const FormData = (await import('form-data')).default;
       const formData = new FormData();
@@ -123,40 +101,29 @@ app.all('/api/baserow/*', upload.single('file'), async (req, res) => {
         contentType: req.file.mimetype
       });
 
+      // Add form data if present in request body
+      if (req.body) {
+        Object.keys(req.body).forEach(key => {
+          if (req.body[key] !== undefined && req.body[key] !== null) {
+            formData.append(key, req.body[key]);
+          }
+        });
+      }
+
       const headers = {
         'Authorization': `Token ${process.env.BASEROW_API_TOKEN}`,
         ...formData.getHeaders()
       };
-
-      console.log('📤 Sending to Baserow with form data...');
       
       // Use axios for better form-data handling
       const axios = (await import('axios')).default;
       
       try {
         const response = await axios.post(baserowUrl, formData, { headers });
-        
-        console.log('✅ Baserow response status:', response.status);
-        console.log('📦 Baserow response data:', response.data);
-        console.log('📊 Response data type:', typeof response.data);
-        
-        // Ensure we return the response in the same format as Baserow
-        try {
-          res.status(response.status).json(response.data);
-          console.log('📤 Response sent successfully to frontend');
-        } catch (sendError) {
-          console.error('❌ Error sending response to frontend:', sendError);
-          res.status(500).json({ 
-            error: 'Response sending failed', 
-            message: sendError.message 
-          });
-        }
+        res.status(response.status).json(response.data);
         return;
       } catch (axiosError) {
-        console.error('❌ Axios error during file upload:', axiosError.message);
         if (axiosError.response) {
-          console.error('🔍 Error response status:', axiosError.response.status);
-          console.error('🔍 Error response data:', axiosError.response.data);
           res.status(axiosError.response.status).json(axiosError.response.data);
         } else {
           res.status(500).json({ 
@@ -174,29 +141,23 @@ app.all('/api/baserow/*', upload.single('file'), async (req, res) => {
       'user-agent': req.headers['user-agent'] || 'Proxy-Server'
     };
 
-    // Clean up headers - remove problematic ones
-    const originalHeaders = Object.keys(req.headers);
-    console.log('🔍 Original headers:', originalHeaders);
-    
     // Keep only safe headers
     const safeHeaders = ['accept', 'user-agent'];
-    const cleanedHeaders = originalHeaders.filter(h => safeHeaders.includes(h.toLowerCase()));
-    console.log('🔍 Cleaned headers:', cleanedHeaders);
+    const cleanedHeaders = Object.keys(req.headers).filter(h => safeHeaders.includes(h.toLowerCase()));
 
     // Authentication logic
     const isTableOperation = baserowPath.includes('/fields/table/') || 
                             baserowPath.includes('/import/') || 
                             (req.method === 'POST' && baserowPath.includes('/tables/database/')) ||
+                            (req.method === 'DELETE' && baserowPath.includes('/tables/')) || // Table deletion
                             baserowPath.includes('/fields/') || // Field operations like PATCH /database/fields/47018/
                             baserowPath.includes('/database/fields/'); // All field operations
     const isRowOperation = req.method === 'POST' && baserowPath.includes('/rows/');
 
     if (isTableOperation) {
-      console.log('🔑 Added JWT authorization for table operation');
       const jwt = await getValidJwtToken();
       headers['Authorization'] = `JWT ${jwt}`;
     } else {
-      console.log('🔑 Added API token authorization');
       headers['Authorization'] = `Token ${process.env.BASEROW_API_TOKEN}`;
     }
 
@@ -205,8 +166,6 @@ app.all('/api/baserow/*', upload.single('file'), async (req, res) => {
       headers[headerName] = req.headers[headerName];
     });
 
-    console.log('🔍 Final headers being sent:', headers);
-
     const fetchOptions = {
       method: req.method,
       headers: headers
@@ -214,23 +173,43 @@ app.all('/api/baserow/*', upload.single('file'), async (req, res) => {
 
     // Add body for non-GET requests
     if (req.method !== 'GET' && req.body && Object.keys(req.body).length > 0) {
-      console.log('📝 Setting JSON content-type and body');
       headers['Content-Type'] = 'application/json';
       fetchOptions.body = JSON.stringify(req.body);
       
-      // Debug row operations
-      if (isRowOperation) {
-        console.log('🔍 ROW OPERATION DATA:');
-        console.log('📋 Request body:', req.body);
-        console.log('📊 Body length:', JSON.stringify(req.body).length);
-        console.log('📈 Object keys:', Object.keys(req.body));
+      if (isRowOperation && baserowPath.includes('/rows/table/')) {
       }
     }
-
-    console.log(`🔄 Proxying ${req.method} ${baserowUrl}`);
     
-    const response = await fetch(baserowUrl, fetchOptions);
+    let response = await fetch(baserowUrl, fetchOptions);
+    
+    // If we get 401 on a table operation, refresh token and retry once
+    if (!response.ok && response.status === 401 && isTableOperation) {
+      try {
+        // Force refresh the JWT token
+        jwtToken = '';
+        jwtExpiry = 0;
+        const freshJwt = await getValidJwtToken();
+        
+        // Update headers with fresh token
+        fetchOptions.headers['Authorization'] = `JWT ${freshJwt}`;
+        
+        // Retry the request
+        response = await fetch(baserowUrl, fetchOptions);
+        
+        if (response.ok) {
+        } else {
+        }
+      } catch (retryError) {
+      }
+    }
+    
     const data = await response.text();
+    
+    if (isRowOperation && baserowPath.includes('/rows/table/')) {
+      if (!response.ok) {
+      } else {
+      }
+    }
     
     // Forward status and headers
     res.status(response.status);
@@ -244,7 +223,6 @@ app.all('/api/baserow/*', upload.single('file'), async (req, res) => {
 
     res.send(data);
   } catch (error) {
-    console.error('❌ Proxy error:', error);
     res.status(500).json({ 
       error: 'Proxy server error', 
       message: error.message 
@@ -278,7 +256,6 @@ app.post('/api/upload-file', upload.single('file'), async (req, res) => {
       message: 'File received successfully'
     });
   } catch (error) {
-    console.error('❌ File upload error:', error);
     res.status(500).json({ 
       error: 'File upload error', 
       message: error.message 
@@ -288,15 +265,9 @@ app.post('/api/upload-file', upload.single('file'), async (req, res) => {
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`🚀 Secure Baserow proxy server running on port ${PORT}`);
-  console.log(`🔒 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🌐 Allowed origins: ${allowedOrigins.join(', ')}`);
-  
   // Validate configuration
   if (!process.env.BASEROW_API_TOKEN) {
-    console.warn('⚠️  Warning: BASEROW_API_TOKEN not set');
   }
   if (!process.env.BASEROW_USERNAME || !process.env.BASEROW_PASSWORD) {
-    console.warn('⚠️  Warning: BASEROW_USERNAME or BASEROW_PASSWORD not set');
   }
 });

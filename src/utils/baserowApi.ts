@@ -61,19 +61,29 @@ const makeApiCall = async (endpoint: string, options: RequestInit = {}) => {
 };
 
 // Helper function for operations that require JWT tokens (like table/database operations)
-const makeJWTApiCall = async (endpoint: string, options: RequestInit = {}) => {
+const makeJWTApiCall = async (endpoint: string, options: RequestInit = {}, retryCount = 0): Promise<Response> => {
   const config = getApiConfig();
+  const MAX_RETRIES = 2;
   
   if (config.isProxyEnabled) {
     // Use proxy server - tokens are handled server-side
     const proxyUrl = `${config.proxyBaseUrl}/api/baserow${endpoint}`;
-    return fetch(proxyUrl, {
+    const response = await fetch(proxyUrl, {
       ...options,
       headers: {
         'Content-Type': 'application/json',
         ...options.headers
       }
     });
+    
+    // If we get a 401 error and haven't exhausted retries, wait and retry
+    if (!response.ok && response.status === 401 && retryCount < MAX_RETRIES) {
+      // Wait a bit for the server to refresh its token
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      return makeJWTApiCall(endpoint, options, retryCount + 1);
+    }
+    
+    return response;
   } else {
     // Direct API call - use JWT token for table operations
     const directUrl = `https://baserow.app-inventor.org/api${endpoint}`;
@@ -128,7 +138,6 @@ const initializeConfig = async () => {
         BASEROW_CONFIG.databaseId = serverConfig.databaseId;
       }
     } catch (error) {
-      console.warn('Failed to fetch config from proxy server:', error);
     }
   }
 };
@@ -326,10 +335,7 @@ export const recoverFullFileContentIfNeeded = async (
     
     return fullContent;
   } catch (error) {
-    console.error('❌ Failed to recover full file content:', error);
-    
     // Last resort: Try to get the file data from the table row itself
-    console.log('🔄 Attempting last resort: fetching file info from table row...');
     try {
       const rowResponse = await makeApiCall(`/database/rows/table/${BASEROW_CONFIG.tableId}/${fileInfo.recordId}/?user_field_names=true`);
       
@@ -339,8 +345,6 @@ export const recoverFullFileContentIfNeeded = async (
         
         if (fileField && Array.isArray(fileField) && fileField.length > 0) {
           const latestFile = fileField[0];
-          console.log('🔄 Found file in row data, attempting fresh download...');
-          
           // Try downloading with the fresh file URL (direct file download, not through proxy)
           const config = getApiConfig();
           const jwtToken = config.isProxyEnabled ? '' : await getJWTToken();
@@ -353,39 +357,28 @@ export const recoverFullFileContentIfNeeded = async (
           
           if (freshResponse.ok) {
             const freshContent = await freshResponse.text();
-            console.log('✅ Successfully recovered content via fresh file URL!');
             return freshContent;
           }
         }
       }
     } catch (lastResortError) {
-      console.error('❌ Last resort method also failed:', lastResortError);
     }
     
     // Provide more specific error messages
     if (error instanceof Error) {
       if (error.name === 'AbortError') {
-        console.warn('⏰ File recovery timed out - file may be very large');
       } else if (error.message.includes('ECONNREFUSED') || error.message.includes('fetch failed')) {
-        console.warn('🔌 Cannot connect to Baserow server');
       } else if (error.message.includes('401') || error.message.includes('403')) {
-        console.warn('🔐 Authentication failed for file recovery - token may be invalid');
       } else if (error.message.includes('404')) {
-        console.warn('📁 File not found on server - it may have been deleted');
       } else {
-        console.warn(`🔧 Network or server error: ${error.message}`);
       }
     }
-    
-    console.warn('⚠️ Falling back to truncated content - import will be incomplete');
-    console.warn('💡 SOLUTION: Re-upload the file and import immediately without navigating away');
-    
     // Return the truncated content as fallback
     return currentContent;
   }
 };
 
-// Clear cached JWT token (useful for debugging or manual refresh)
+// Clear cached JWT token
 export const clearJWTTokenCache = () => {
   CACHED_JWT_TOKEN = null;
   JWT_TOKEN_EXPIRES_AT = 0;
@@ -405,7 +398,6 @@ export const validateAuthCredentials = (): boolean => {
     const hasCredentials = !!(import.meta.env.VITE_BASEROW_USERNAME && import.meta.env.VITE_BASEROW_PASSWORD);
     
     if (!hasApiToken && !hasCredentials) {
-      console.error('❌ Missing authentication credentials: need either VITE_BASEROW_API_TOKEN or (VITE_BASEROW_USERNAME + VITE_BASEROW_PASSWORD)');
       return false;
     }
     
@@ -430,18 +422,14 @@ const getJWTToken = async (): Promise<string> => {
     if (CACHED_JWT_TOKEN && JWT_TOKEN_EXPIRES_AT > (now + JWT_TOKEN_BUFFER_MS)) {
       const remainingMinutes = Math.round((JWT_TOKEN_EXPIRES_AT - now) / 60000);
       if (remainingMinutes <= 15) {
-        console.log(`🔑 Using cached token (expires in ${remainingMinutes} minutes)`);
       }
       return CACHED_JWT_TOKEN;
     }
 
     // Prevent rapid refresh attempts
     if (LAST_TOKEN_REFRESH && (now - LAST_TOKEN_REFRESH) < MIN_REFRESH_INTERVAL_MS) {
-      console.log('⏱️ Waiting for minimum refresh interval...');
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
-
-    console.log('🔑 Fetching fresh JWT token...');
     LAST_TOKEN_REFRESH = now;
     
     // Clear old token before requesting new one
@@ -469,8 +457,6 @@ const getJWTToken = async (): Promise<string> => {
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('JWT authentication failed:', errorText);
-      
       if (response.status === 401) {
         throw new Error('Authentication failed: Invalid username or password. Please check your credentials.');
       } else if (response.status === 403) {
@@ -492,11 +478,8 @@ const getJWTToken = async (): Promise<string> => {
     JWT_TOKEN_EXPIRES_AT = now + (50 * 60 * 1000); 
     
     const expiresInMinutes = Math.round((JWT_TOKEN_EXPIRES_AT - now) / 60000);
-    console.log(`✅ Fresh JWT token cached (expires in ~${expiresInMinutes} minutes)`);
-    
     return CACHED_JWT_TOKEN;
   } catch (error) {
-    console.error('Error getting JWT token:', error);
     // Clear cached token on error
     CACHED_JWT_TOKEN = null;
     JWT_TOKEN_EXPIRES_AT = 0;
@@ -511,13 +494,19 @@ const getJWTToken = async (): Promise<string> => {
 
 // Helper function to ensure fresh token for critical operations
 const ensureFreshToken = async (): Promise<string> => {
+  const config = getApiConfig();
+  
+  // In proxy mode, tokens are handled server-side, no client-side token needed
+  if (config.isProxyEnabled) {
+    return 'PROXY_HANDLED';
+  }
+  
   const now = Date.now();
   
   // If token is already expired or expires within 15 minutes, get a fresh one
   const CRITICAL_BUFFER_MS = 15 * 60 * 1000; // 15 minutes
   
   if (!CACHED_JWT_TOKEN || JWT_TOKEN_EXPIRES_AT <= now || JWT_TOKEN_EXPIRES_AT <= (now + CRITICAL_BUFFER_MS)) {
-    console.log('🔄 Proactively refreshing token for long operation...');
     clearJWTTokenCache(); // Clear cache first to ensure fresh token
     return await getJWTToken();
   }
@@ -532,7 +521,6 @@ const handleAuthError = (error: any, operation: string) => {
        error.message.includes('Authentication failed') || 
        error.message.includes('token') || 
        error.message.includes('expired'))) {
-    console.warn(`🔑 Authentication error in ${operation}, clearing token cache...`);
     clearJWTTokenCache();
   }
   throw error;
@@ -551,19 +539,22 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
       // Update existing record and delete old table if exists
       
       // Delete old table if it exists - with safety check
-      if ('CreatedTableId' in existingRecord && existingRecord.CreatedTableId) {
-        await deleteTable(existingRecord.CreatedTableId);
+      if ('field_9206' in existingRecord && existingRecord.field_9206) {
+        try {
+          await deleteTable(existingRecord.field_9206);
+        } catch (deletionError) {
+          // Continue with update even if deletion fails
+        }
       }
       
-      const updateResponse = await makeApiCall(`/database/rows/table/${BASEROW_CONFIG.tableId}/${existingRecord.id}/?user_field_names=true`, {
+      const updateResponse = await makeApiCall(`/database/rows/table/${BASEROW_CONFIG.tableId}/${existingRecord.id}/`, {
         method: 'PATCH',
         body: JSON.stringify({
-          Vorname: data.vorname,
-          Nachname: data.nachname,
-          EMAIL: data.email,
-          Company: data.company,
-          Dateiname: data.file.name,
-          CreatedTableId: null, // Will be updated after new table creation
+          field_8123: data.vorname,      // Vorname
+          field_8124: data.nachname,     // Nachname
+          field_8127: data.email,        // EMAIL
+          field_8125: data.company,      // Company
+          field_9206: null,              // CreatedTableId - Will be updated after new table creation
         }),
       });
 
@@ -572,7 +563,6 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
       }
 
       const updateResult = await updateResponse.json();
-      
         // Store file info for mapping page - process file in chunks for large files
         try {
           const fileContent = await processFileForStorage(data.file); // Use storage-optimized processing
@@ -630,9 +620,7 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
                   size: data.file.size,
                   baserowUrl: fileInfo.file?.url || '',
                 });
-                console.log('✅ Stored complete file content in IndexedDB for future access');
               } catch (indexedDBError) {
-                console.warn('⚠️ Could not store in IndexedDB, falling back to temporary memory:', indexedDBError);
                 // Fallback to temporary memory
                 TEMP_FILE_CONTENT = fileContent;
                 TEMP_FILE_METADATA = {
@@ -652,7 +640,6 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
             }
             
             if (lines.length > 2000) {
-              console.warn('⚠️ Large existing file content was truncated for storage.');
             }
           } catch (finalError) {
             // Ultra-minimal storage: Only headers + metadata (for column mapping only)
@@ -685,9 +672,7 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
                       size: data.file.size,
                       baserowUrl: fileInfo.file?.url || '',
                     });
-                    console.log('✅ Stored complete file content in IndexedDB for future access');
                   } catch (indexedDBError) {
-                    console.warn('⚠️ Could not store in IndexedDB, falling back to temporary memory:', indexedDBError);
                     // Fallback to temporary memory
                     TEMP_FILE_CONTENT = fileContent;
                     TEMP_FILE_METADATA = {
@@ -728,7 +713,6 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
         }
         
       } catch (processingError) {
-        console.error('Error processing file content:', processingError);
         throw new Error('Fehler beim Verarbeiten der Datei. Die Datei ist möglicherweise zu groß oder beschädigt.');
       }
       
@@ -749,7 +733,6 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
 
       if (!fileUploadResponse.ok) {
         const errorText = await fileUploadResponse.text();
-        console.error('File upload failed:', errorText);
         throw new Error(`Datei-Upload fehlgeschlagen: ${errorText}`);
       }
 
@@ -760,41 +743,33 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
       try {
         fileContent = await processFileForStorage(data.file); // Use storage-optimized processing
       } catch (processingError) {
-        console.error('Error processing file content:', processingError);
         throw new Error('Fehler beim Verarbeiten der Datei. Die Datei ist möglicherweise zu groß oder beschädigt.');
       }
       
       // Then, create a row in the table with the form data and file reference
       const rowData = {
-        Vorname: data.vorname,
-        Nachname: data.nachname,
-        EMAIL: data.email,
-        Company: data.company,
-        Datei: [fileUploadResult],
-        Dateiname: data.file.name,
-        CreatedTableId: null, // Will be updated after table creation
+        field_8123: data.vorname,      // Vorname
+        field_8124: data.nachname,     // Nachname  
+        field_8127: data.email,        // EMAIL
+        field_8125: data.company,      // Company
+        field_8126: [fileUploadResult], // Datei
+        field_9206: null,              // CreatedTableId - Will be updated after table creation
       };
-
-      const rowResponse = await makeApiCall(`/database/rows/table/${BASEROW_CONFIG.tableId}/?user_field_names=true`, {
+      const rowResponse = await makeApiCall(`/database/rows/table/${BASEROW_CONFIG.tableId}/`, {
         method: 'POST',
         body: JSON.stringify(rowData),
       });
-
       if (!rowResponse.ok) {
         const errorText = await rowResponse.text();
-        console.error('Row creation failed:', errorText);
-        console.error('Response status:', rowResponse.status);
         throw new Error(`Datensatz konnte nicht erstellt werden: ${errorText}`);
       }
 
       const rowResult = await rowResponse.json();
-      
       // Store file info in session for the mapping page with size check
       const isLargeFile = data.file.size > 10 * 1024 * 1024; // 10MB threshold
       let contentToStore = fileContent;
       
       if (isLargeFile) {
-        console.log('Large file detected, but storing full content for processing...');
         // For session storage, we'll store the full content but may need to fetch from URL later
         contentToStore = fileContent;
       }
@@ -869,9 +844,7 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
                   size: data.file.size,
                   baserowUrl: fileUploadResult?.url || '',
                 });
-                console.log('✅ Stored complete file content in IndexedDB for future access');
               } catch (indexedDBError) {
-                console.warn('⚠️ Could not store in IndexedDB, falling back to temporary memory:', indexedDBError);
                 // Fallback to temporary memory
                 TEMP_FILE_CONTENT = fileContent;
                 TEMP_FILE_METADATA = {
@@ -891,7 +864,6 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
             }
             
             if (lines.length > 2000) {
-              console.warn('⚠️ Large file content was truncated for storage. Column mapping will work, but full import may re-process file.');
             }
           } catch (secondStorageError) {
             
@@ -925,9 +897,7 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
                       size: data.file.size,
                       baserowUrl: fileUploadResult?.url || '',
                     });
-                    console.log('✅ Stored complete file content in IndexedDB for future access');
                   } catch (indexedDBError) {
-                    console.warn('⚠️ Could not store in IndexedDB, falling back to temporary memory:', indexedDBError);
                     // Fallback to temporary memory
                     TEMP_FILE_CONTENT = fileContent;
                     TEMP_FILE_METADATA = {
@@ -949,8 +919,6 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
               
               // Show user-friendly info about large file processing
               if (data.file.size > 50 * 1024 * 1024) { // 50MB
-                console.warn(`� LARGE FILE INFO: File size (${(data.file.size / 1024 / 1024).toFixed(2)}MB) will be processed during import.`);
-                console.warn('⚡ PERFORMANCE: Import may take longer due to file size, but all data will be processed.');
               }
               
             } catch (emergencyError) {
@@ -979,7 +947,6 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
           }
         }
       } catch (storageError) {
-        console.error('Error in storage handling:', storageError);
         throw new Error('Fehler beim Speichern der Datei-Informationen.');
       }
 
@@ -992,8 +959,6 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
     }
 
   } catch (error) {
-    console.error('Baserow upload error:', error);
-    
     // Provide more specific error messages
     if (error instanceof Error) {
       if (error.message.includes('Failed to fetch')) {
@@ -1059,16 +1024,12 @@ const processFileInChunks = async (file: File, forUploadProcessing: boolean = fa
           await new Promise(resolve => setTimeout(resolve, 5)); // Reduced from 25ms to 5ms
         }
       } catch (chunkError) {
-        console.error('Error processing chunk:', chunkError);
         throw new Error(`Fehler beim Verarbeiten von Chunk ${i + 1}. Die Datei ist möglicherweise beschädigt.`);
       }
     }
-    
-    console.log(`✅ Successfully processed file: ${(processedSize / 1024 / 1024).toFixed(2)}MB`);
     return content;
     
   } catch (error) {
-    console.error('Error in processFileInChunks:', error);
     if (error instanceof Error) {
       throw error;
     }
@@ -1090,8 +1051,6 @@ const processFileForStorage = async (file: File): Promise<string> => {
  */
 const processFileForImport = async (file: File): Promise<string> => {
   // For import operations, we need the full file content regardless of size
-  console.log('🔄 Processing file for import - ensuring full content...');
-  
   const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
   let content = '';
   let processedSize = 0;
@@ -1100,12 +1059,8 @@ const processFileForImport = async (file: File): Promise<string> => {
   if (file.size > maxFileSize) {
     throw new Error(`Datei zu groß (${(file.size / 1024 / 1024).toFixed(2)}MB). Maximale Größe: ${maxFileSize / 1024 / 1024}MB`);
   }
-  
-  console.log(`Processing FULL file for import: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
-  
   // Always use streaming for import to handle large files
   if (file.size > 50 * 1024 * 1024) {
-    console.log('Using streaming approach for large file import');
     return await processLargeFileStreaming(file);
   }
   
@@ -1125,19 +1080,13 @@ const processFileForImport = async (file: File): Promise<string> => {
       const chunkText = await chunk.text();
       content += chunkText;
       processedSize += chunk.size;
-      
-      console.log(`Import processing chunk ${i + 1}/${chunks.length}: ${(processedSize / 1024 / 1024).toFixed(2)}MB / ${(file.size / 1024 / 1024).toFixed(2)}MB`);
-      
       if (i < chunks.length - 1) {
         await new Promise(resolve => setTimeout(resolve, 5));
       }
     } catch (chunkError) {
-      console.error('Error processing chunk for import:', chunkError);
       throw new Error(`Fehler beim Verarbeiten von Chunk ${i + 1} für Import.`);
     }
   }
-  
-  console.log(`✅ Successfully processed FULL file for import: ${(processedSize / 1024 / 1024).toFixed(2)}MB`);
   return content;
 };
 
@@ -1146,9 +1095,6 @@ const processLargeFileStreaming = async (file: File): Promise<string> => {
   const STREAM_CHUNK_SIZE = 1024 * 1024; // 1MB streaming chunks
   let content = '';
   let totalProcessed = 0;
-  
-  console.log('Processing large file with streaming approach');
-  
   return new Promise((resolve, reject) => {
     try {
       const reader = file.stream().getReader();
@@ -1160,7 +1106,6 @@ const processLargeFileStreaming = async (file: File): Promise<string> => {
             const { done, value } = await reader.read();
             
             if (done) {
-              console.log(`Streaming complete. Total processed: ${(totalProcessed / 1024 / 1024).toFixed(2)}MB`);
               resolve(content);
               break;
             }
@@ -1171,21 +1116,18 @@ const processLargeFileStreaming = async (file: File): Promise<string> => {
             
             // Log progress every 10MB
             if (totalProcessed % (10 * 1024 * 1024) < value.length) {
-              console.log(`Streaming progress: ${(totalProcessed / 1024 / 1024).toFixed(2)}MB processed`);
             }
             
             // Minimal delay to prevent blocking
             await new Promise(resolve => setTimeout(resolve, 1)); // Reduced from 10ms to 1ms
           }
         } catch (error) {
-          console.error('Error in streaming:', error);
           reject(new Error('Fehler beim Streaming der Datei. Die Datei ist möglicherweise beschädigt.'));
         }
       };
       
       processStream();
     } catch (error) {
-      console.error('Error setting up stream:', error);
       reject(new Error('Fehler beim Einrichten des Datei-Streams.'));
     }
   });
@@ -1194,7 +1136,7 @@ const processLargeFileStreaming = async (file: File): Promise<string> => {
 // Helper function to find existing records
 const findExistingRecord = async (vorname: string, nachname: string, email: string, company: string) => {
   try {
-    const response = await makeApiCall(`/database/rows/table/${BASEROW_CONFIG.tableId}/?user_field_names=true`);
+    const response = await makeApiCall(`/database/rows/table/${BASEROW_CONFIG.tableId}/`);
 
     if (!response.ok) {
       return null;
@@ -1202,15 +1144,14 @@ const findExistingRecord = async (vorname: string, nachname: string, email: stri
 
     const data = await response.json();
     const existingRecord = data.results?.find((row: any) => 
-      row.Vorname?.toLowerCase() === vorname.toLowerCase() &&
-      row.Nachname?.toLowerCase() === nachname.toLowerCase() &&
-      row.EMAIL?.toLowerCase() === email.toLowerCase() &&
-      row.Company?.toLowerCase() === company.toLowerCase()
+      row.field_8123?.toLowerCase() === vorname.toLowerCase() &&      // Vorname
+      row.field_8124?.toLowerCase() === nachname.toLowerCase() &&     // Nachname
+      row.field_8127?.toLowerCase() === email.toLowerCase() &&        // EMAIL
+      row.field_8125?.toLowerCase() === company.toLowerCase()         // Company
     );
 
     return existingRecord || null;
   } catch (error) {
-    console.error('Error checking for existing records:', error);
     return null;
   }
 };
@@ -1234,9 +1175,6 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
 
       if (!tableResponse.ok) {
         const errorText = await tableResponse.text();
-        console.error('Table creation failed:', errorText);
-        console.error('Response status:', tableResponse.status);
-        
         // If it's a 401 (token expired) and we haven't retried yet, clear cache and retry
         if (tableResponse.status === 401 && attempt < maxAttempts - 1) {
           clearJWTTokenCache(); // Clear cache for retry
@@ -1260,19 +1198,17 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
       await new Promise(resolve => setTimeout(resolve, 50));
 
       // Handle the primary "Name" field and create other columns  
-      const jwtToken = await getJWTToken(); // Get JWT token for table operations
+      const config = getApiConfig();
+      const jwtToken = config.isProxyEnabled ? 'PROXY_HANDLED' : await getJWTToken(); // Get JWT token for table operations only in direct mode
       await setupTableColumns(tableResult.id, columns, jwtToken);
 
       return tableResult.id.toString();
       
     } catch (error) {
-      console.error(`Error creating table (attempt ${attempt + 1}):`, error);
-      
       // If it's a token-related error and we can retry, continue
       if (error instanceof Error && 
           (error.message.includes('Authentication failed') || error.message.includes('expired')) && 
           attempt < maxAttempts - 1) {
-        console.log('🔄 Retrying table creation due to authentication error...');
         attempt++;
         continue;
       }
@@ -1288,20 +1224,20 @@ export const createNewTable = async (tableName: string, columns: string[]): Prom
 // Setup table columns - rename primary field and create others with token refresh
 const setupTableColumns = async (tableId: string, columns: string[], initialJwtToken: string) => {
   let jwtToken = initialJwtToken;
+  const config = getApiConfig();
   
   const refreshTokenIfNeeded = async (response: Response) => {
     if (response.status === 401) {
-      console.log('🔄 Token expired during column setup, getting fresh token...');
-      clearJWTTokenCache(); // Use proper cache clearing function
-      jwtToken = await ensureFreshToken(); // Use ensureFreshToken for consistency
+      if (!config.isProxyEnabled) {
+        clearJWTTokenCache(); // Use proper cache clearing function only in direct mode
+        jwtToken = await ensureFreshToken(); // Use ensureFreshToken for consistency
+      }
       return true;
     }
     return false;
   };
   
   try {
-    console.log('Setting up table columns for table:', tableId, 'with columns:', columns);
-    
     // Get current table fields
     let fieldsResponse = await makeJWTApiCall(`/database/fields/table/${tableId}/`, {
       method: 'GET'
@@ -1322,15 +1258,11 @@ const setupTableColumns = async (tableId: string, columns: string[], initialJwtT
     }
 
     const fields = await fieldsResponse.json();
-    console.log('Current table fields:', fields);
-    
     // Find the primary field (cannot be deleted, must exist)
     const primaryField = fields.find((field: any) => field.primary === true);
     
     if (primaryField && columns.length > 0) {
       // Rename the primary field to the first CSV column
-      console.log(`Renaming primary field ${primaryField.name} to ${columns[0]}`);
-      
       let renameResponse = await makeJWTApiCall(`/database/fields/${primaryField.id}/`, {
         method: 'PATCH',
         body: JSON.stringify({
@@ -1352,10 +1284,8 @@ const setupTableColumns = async (tableId: string, columns: string[], initialJwtT
       }
 
       if (renameResponse.ok) {
-        console.log('Successfully renamed primary field to:', columns[0]);
       } else {
         const errorText = await renameResponse.text();
-        console.error('Failed to rename primary field:', errorText);
         throw new Error(`Failed to rename primary field: ${errorText}`);
       }
       
@@ -1366,8 +1296,6 @@ const setupTableColumns = async (tableId: string, columns: string[], initialJwtT
     // Delete any other default fields (but not the primary one)
     for (const field of fields) {
       if (field.id !== primaryField?.id && (field.name === 'Notes' || field.name === 'Active')) {
-        console.log(`Deleting default field: ${field.name}`);
-        
         let deleteResponse = await makeJWTApiCall(`/database/fields/${field.id}/`, {
           method: 'DELETE'
         });
@@ -1383,10 +1311,8 @@ const setupTableColumns = async (tableId: string, columns: string[], initialJwtT
         }
         
         if (deleteResponse.ok) {
-          console.log('Successfully deleted field:', field.name);
         } else {
           const errorText = await deleteResponse.text();
-          console.log('Could not delete field (expected for some default fields):', field.name, errorText);
         }
         
         await new Promise(resolve => setTimeout(resolve, 25)); // Reduced from 100ms to 25ms
@@ -1396,18 +1322,14 @@ const setupTableColumns = async (tableId: string, columns: string[], initialJwtT
     // Create remaining columns (skip the first one since we renamed the primary field to it)
     for (let i = 1; i < columns.length; i++) {
       const columnName = columns[i];
-      console.log(`Creating column: ${columnName}`);
-      
       await createTableColumn(tableId, columnName, jwtToken);
       // Wait between column creations
     }
 
     // Minimal wait for field operations
-    console.log('Waiting briefly for all field operations to complete...');
     await new Promise(resolve => setTimeout(resolve, 50)); // Reduced from 200ms to 50ms
     
   } catch (error) {
-    console.error('Error setting up table columns:', error);
     throw error;
   }
 };
@@ -1417,8 +1339,6 @@ const createTableColumn = async (tableId: string, columnName: string, initialJwt
   let jwtToken = initialJwtToken;
   
   try {
-    console.log(`Creating column: ${columnName} in table ${tableId}`);
-    
     const columnData = {
       name: columnName,
       type: 'text'
@@ -1432,9 +1352,11 @@ const createTableColumn = async (tableId: string, columnName: string, initialJwt
     if (!columnResponse.ok) {
       // Check if it's a token issue
       if (columnResponse.status === 401) {
-        console.log('🔄 Token expired during column creation, getting fresh token...');
-        clearJWTTokenCache(); // Use proper cache clearing function
-        jwtToken = await ensureFreshToken(); // Use ensureFreshToken for consistency
+        const config = getApiConfig();
+        if (!config.isProxyEnabled) {
+          clearJWTTokenCache(); // Use proper cache clearing function only in direct mode
+          jwtToken = await ensureFreshToken(); // Use ensureFreshToken for consistency
+        }
         
         // Retry with fresh token
         columnResponse = await makeJWTApiCall(`/database/fields/table/${tableId}/`, {
@@ -1445,52 +1367,73 @@ const createTableColumn = async (tableId: string, columnName: string, initialJwt
       
       if (!columnResponse.ok) {
         const errorText = await columnResponse.text();
-        console.error('Column creation failed for:', columnName, errorText);
         throw new Error(`Failed to create column: ${columnName} - ${errorText}`);
       }
     }
     
     const result = await columnResponse.json();
-    console.log('Successfully created column:', columnName, 'with ID:', result.id);
     return result.id;
   } catch (error) {
-    console.error('Error creating column:', columnName, error);
     throw error;
   }
 };
 
-// Delete a table using fresh JWT token with enhanced token management
-const deleteTable = async (tableId: string) => {
+// Delete a table using fresh JWT token with enhanced token management and retry logic
+const deleteTable = async (tableId: string, retryCount = 0) => {
+  const MAX_RETRIES = 2;
+  const config = getApiConfig();
+  
   try {
-    const jwtToken = await ensureFreshToken(); // Use ensureFreshToken for reliable deletion
+    // Only get token for direct mode, proxy mode handles authentication server-side
+    if (!config.isProxyEnabled) {
+      // Always get a fresh token before deletion in direct mode
+      const jwtToken = await ensureFreshToken();
+    }
     
     const response = await makeJWTApiCall(`/database/tables/${tableId}/`, {
       method: 'DELETE'
     });
 
     if (response.ok) {
-      console.log('Old table deleted successfully:', tableId);
+      return;
+    } else if (response.status === 401 && retryCount < MAX_RETRIES) {
+      if (!config.isProxyEnabled) {
+        clearJWTTokenCache(); // Only clear cache in direct mode
+      }
+      await new Promise(resolve => setTimeout(resolve, 500)); // Brief delay
+      return await deleteTable(tableId, retryCount + 1);
+    } else if (response.status === 404) {
+      return; // Table doesn't exist, which is fine
+    } else {
+      const errorText = await response.text();
+      // Don't throw error for deletion failures - just log and continue
     }
   } catch (error) {
-    console.error('Error deleting table:', error);
+    if (retryCount < MAX_RETRIES) {
+      if (!config.isProxyEnabled) {
+        clearJWTTokenCache(); // Only clear cache in direct mode
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Longer delay on error
+      return await deleteTable(tableId, retryCount + 1);
+    } else {
+      // Don't throw error - deletion failure shouldn't stop the import process
+    }
   }
 };
 
 // Update record with created table ID
 const updateRecordWithTableId = async (recordId: number, tableId: string) => {
   try {
-    const response = await makeApiCall(`/database/rows/table/${BASEROW_CONFIG.tableId}/${recordId}/?user_field_names=true`, {
+    const response = await makeApiCall(`/database/rows/table/${BASEROW_CONFIG.tableId}/${recordId}/`, {
       method: 'PATCH',
       body: JSON.stringify({
-        CreatedTableId: tableId,
+        field_9206: tableId,  // CreatedTableId
       }),
     });
 
     if (!response.ok) {
-      console.error('Failed to update record with table ID');
     }
   } catch (error) {
-    console.error('Error updating record with table ID:', error);
   }
 };
 
@@ -1501,11 +1444,6 @@ export const getTableSchema = async (tableId: string) => {
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('❌ Table schema fetch failed:', {
-        status: response.status,
-        statusText: response.statusText,
-        errorText: errorText.substring(0, 200)
-      });
       throw new Error(`Failed to fetch table schema: ${response.status} - ${errorText.substring(0, 100)}`);
     }
 
@@ -1517,7 +1455,6 @@ export const getTableSchema = async (tableId: string) => {
       type: field.type,
     }));
   } catch (error) {
-    console.error('Error fetching table schema:', error);
     throw error;
   }
 };
@@ -1535,26 +1472,11 @@ export const parseFileHeaders = async (file: File): Promise<string[]> => {
     
     // Use stored file content instead of fetching from URL
     let content = fileInfo.fullFileContent || fileInfo.fileContent;
-    
-    console.log(`📊 HEADER PARSING - Content Analysis:`);
-    console.log(`Has fullFileContent: ${!!fileInfo.fullFileContent}`);
-    console.log(`Has fileContent: ${!!fileInfo.fileContent}`);
-    console.log(`Content length: ${content?.length || 0} characters`);
-    console.log(`Is optimized storage: ${!!fileInfo.isOptimized}`);
-    console.log(`Is header-only storage: ${!!fileInfo.isHeaderOnly}`);
-    console.log(`Requires file reupload: ${!!fileInfo.requiresFileReupload}`);
-    console.log(`Total lines in file: ${fileInfo.totalLines || 'unknown'}`);
-    console.log(`Storage warning: ${fileInfo.storageWarning || 'none'}`);
-    
     // If we have header-only content, use it directly (it should be sufficient for parsing headers)
     if (fileInfo.isHeaderOnly && content) {
-      console.log('✅ Using header-only content for column parsing');
-      console.log(`Header-only content preview: ${content.substring(0, 200)}`);
     }
     // If we need to reprocess or content is empty/truncated for large files
     else if (!content || fileInfo.needsReprocessing || fileInfo.requiresFileReupload || (fileInfo.isLargeFile && content.length < 1000)) {
-      console.log('🔄 Content missing or incomplete, attempting to get headers from original file...');
-      
       // Check if we're in a situation where file reupload is required
       if (fileInfo.requiresFileReupload) {
         throw new Error(`${fileInfo.storageWarning || 'Datei zu groß für Browser-Speicher'}\n\nBitte laden Sie eine kleinere Datei hoch oder teilen Sie die Datei auf.`);
@@ -1562,17 +1484,11 @@ export const parseFileHeaders = async (file: File): Promise<string[]> => {
       
       // For header parsing, we only need the first few lines, so read from the original file
       try {
-        console.log('📖 Reading header chunk from original file object...');
         const headerChunk = file.slice(0, 1024 * 1024); // First 1MB should contain headers
         content = await headerChunk.text();
-        console.log('✅ Successfully read headers from original file chunk');
-        console.log(`Header chunk length: ${content.length} characters`);
       } catch (fileReadError) {
-        console.error('❌ Failed to read from original file:', fileReadError.message);
-        
         // If we have optimized content, try to use it for headers
         if (fileInfo.fileContent && (fileInfo.isOptimized || fileInfo.isHeaderOnly)) {
-          console.log('🔄 Falling back to stored content for headers...');
           content = fileInfo.fileContent;
           // Remove the truncation marker if present
           content = content.replace('\n\n[...CONTENT_TRUNCATED_FOR_STORAGE...]\n\n', '\n');
@@ -1585,15 +1501,11 @@ export const parseFileHeaders = async (file: File): Promise<string[]> => {
     if (!content) {
       throw new Error('No file content found for header parsing');
     }
-
-    console.log('📝 Header content preview:', content.substring(0, 200));
-    
     if (file.name.toLowerCase().endsWith('.csv') || (fileInfo.file?.mime_type?.includes('csv'))) {
       // Parse CSV
       const lines = content.split('\n');
       if (lines.length > 0) {
         const headers = parseCSVLine(lines[0]);
-        console.log('Parsed headers:', headers);
         return headers.filter(header => header.length > 0);
       } else {
         throw new Error('CSV file appears to be empty');
@@ -1603,7 +1515,6 @@ export const parseFileHeaders = async (file: File): Promise<string[]> => {
       throw new Error('Only CSV files are supported. Please upload a .csv file.');
     }
   } catch (error) {
-    console.error('Error parsing file headers:', error);
     throw error;
   }
 };
@@ -1633,9 +1544,6 @@ export const processImportData = async (
   IMPORT_ABORT_CONTROLLER = new AbortController();
   
   try {
-    console.log('🚀 ULTRA-FAST IMPORT PROCESS STARTED');
-    console.log('Starting import process with mappings:', mappings);
-    
     // 🚀 IMMEDIATE PROGRESS FEEDBACK - Show loading state right away
     if (progressCallback) {
       progressCallback({
@@ -1651,28 +1559,24 @@ export const processImportData = async (
     
     // For import operations that create tables, we need JWT tokens (username/password)
     // For regular data operations, API tokens are sufficient
-    console.log('🔑 Validating authentication for import operations...');
     const config = getApiConfig();
     
     if (config.isProxyEnabled) {
-      console.log('✅ Using proxy mode - authentication handled server-side');
     } else {
       // Direct mode - need JWT credentials for table creation
       const hasJwtCredentials = !!(import.meta.env.VITE_BASEROW_USERNAME && import.meta.env.VITE_BASEROW_PASSWORD);
       if (!hasJwtCredentials) {
         throw new Error('Import operations require JWT authentication. Please set VITE_BASEROW_USERNAME and VITE_BASEROW_PASSWORD environment variables.');
       }
-      console.log('✅ JWT credentials available for table creation');
     }
     
-    // Test JWT token early to catch authentication issues
-    console.log('🔑 Validating authentication...');
-    try {
-      await getJWTToken();
-      console.log('✅ Authentication validated successfully');
-    } catch (authError) {
-      console.error('❌ Authentication failed:', authError);
-      throw new Error(`Authentication failed: ${authError instanceof Error ? authError.message : 'Unknown authentication error'}`);
+    // Test JWT token early to catch authentication issues (only in direct mode)
+    if (!config.isProxyEnabled) {
+      try {
+        await getJWTToken();
+      } catch (authError) {
+        throw new Error(`Authentication failed: ${authError instanceof Error ? authError.message : 'Unknown authentication error'}`);
+      }
     }
     
     // Get file content from stored info
@@ -1701,50 +1605,35 @@ export const processImportData = async (
     
     // Check if we only have headers but can import from original source
     if (fileInfo.isHeaderOnly && fileInfo.canImportFromOriginal) {
-      console.log('🔄 HEADER-ONLY MODE: Will fetch full content from server for complete import');
       needsFullFetch = true; // Force full fetch from server
     }
     // Check if we only have headers and cannot import
     else if (fileInfo.isHeaderOnly) {
-      console.warn('🚨 HEADER-ONLY MODE: Only column mapping available, full import requires file reprocessing');
       throw new Error(`${fileInfo.storageWarning || 'Nur Spalten-Mapping verfügbar'}\n\nFür den vollständigen Import benötigen Sie eine kleinere Datei oder müssen die große Datei in kleinere Abschnitte aufteilen.`);
     }
     
     if (fileInfo.isOptimized) {
-      console.log('🔍 Optimized storage detected - content was truncated for storage');
       needsFullFetch = true;
     } else if (fileInfo.needsReprocessing) {
-      console.log('🔍 Reprocessing flag set - content may be incomplete');
       needsFullFetch = true;
     } else if (storedLines.length <= 1000 && fileInfo.totalLines && fileInfo.totalLines > storedLines.length) {
-      console.log('� Stored lines count suggests truncation');
       needsFullFetch = true;
     }
     
     // If we need full content for large files, check temporary storage first
     if (needsFullFetch) {  // ✅ FIXED: Check for ANY file needing full fetch, not just header-only
-      console.log('🔄 Large file detected - checking temporary storage for full content');
-      console.log(`🔄 DEBUG: needsFullFetch=${needsFullFetch}, isHeaderOnly=${fileInfo.isHeaderOnly}, isOptimized=${fileInfo.isOptimized}`);
-      console.log(`🔄 DEBUG: TEMP_FILE_CONTENT exists: ${!!TEMP_FILE_CONTENT}`);
-      console.log(`🔄 DEBUG: TEMP_FILE_METADATA exists: ${!!TEMP_FILE_METADATA}`);
-      console.log(`🔄 DEBUG: TEMP_FILE_CONTENT length: ${TEMP_FILE_CONTENT?.length || 0}`);
       if (TEMP_FILE_METADATA) {
-        console.log(`🔄 DEBUG: TEMP recordId: ${TEMP_FILE_METADATA.recordId}, fileInfo recordId: ${fileInfo.recordId}`);
       }
       
       // First, check if we have the content in temporary memory
       if (TEMP_FILE_CONTENT && TEMP_FILE_METADATA && TEMP_FILE_METADATA.recordId === fileInfo.recordId) {
-        console.log('✅ Found complete file content in temporary memory!');
-        console.log(`📊 Using ${(TEMP_FILE_CONTENT.length / 1024 / 1024).toFixed(2)}MB from temporary storage`);
         content = TEMP_FILE_CONTENT;
         
         // Clear temporary storage to free memory
         TEMP_FILE_CONTENT = null;
         TEMP_FILE_METADATA = null;
-        console.log('🧹 Cleared temporary file storage');
       } else {
         // Use the recovery helper to get full content if possible
-        console.log('🔄 Attempting to recover full file content...');
         content = await recoverFullFileContentIfNeeded(fileInfo, storedContent);
         
         // Clean up any truncation markers
@@ -1752,19 +1641,13 @@ export const processImportData = async (
         
         const recoveredLines = content.split(/\r?\n/).filter(line => line.trim());
         if (fileInfo.totalLines && recoveredLines.length < fileInfo.totalLines * 0.9) {
-          console.warn(`⚠️ WARNING: Only ${recoveredLines.length} of ${fileInfo.totalLines} total lines available`);
-          console.warn('💡 SOLUTION: For complete import of very large files, re-upload and import immediately without navigating away.');
         } else {
-          console.log(`✅ Content recovery successful: ${recoveredLines.length} lines available for import`);
         }
       }
     } else {
       // Use stored content
       content = storedContent.replace(/\n\n\[\.\.\.CONTENT_TRUNCATED_FOR_STORAGE\.\.\.\]\n\n/g, '\n');
-      console.log('✅ Using stored content');
-      
       if (fileInfo.isOptimized) {
-        console.warn('⚠️ Using optimized (truncated) content. Import may be incomplete.');
       }
     }
 
@@ -1782,39 +1665,21 @@ export const processImportData = async (
         
       throw new Error(errorMessage);
     }
-    
-    console.log('Processing file content with length:', content.length);
-    
     // Improved line splitting and filtering for very large files
     const lines = content
       .split(/\r?\n/)
       .map(line => line.trim())
       .filter(line => line && !/^["',\s]*$/.test(line));
-
-    console.log('📊 DETAILED FILE ANALYSIS:');
-    console.log(`Raw content length: ${content.length} characters`);
-    console.log(`Total lines after processing: ${lines.length}`);
-    console.log(`First few characters: "${content.substring(0, 100)}..."`);
-    console.log(`Sample lines count check - Line 999: ${lines[999] ? 'EXISTS' : 'MISSING'}`);
-    console.log(`Sample lines count check - Line 1000: ${lines[1000] ? 'EXISTS' : 'MISSING'}`);
-    console.log(`Sample lines count check - Line 1500: ${lines[1500] ? 'EXISTS' : 'MISSING'}`);
-    
     // Check for content truncation and warn user
     if (fileInfo.isOptimized && lines.length < (fileInfo.totalLines || 0)) {
-      console.warn('⚠️ CONTENT TRUNCATION DETECTED');
-      console.warn(`📊 Processing ${lines.length} lines out of ${fileInfo.totalLines} total lines`);
-      console.warn('💡 This may result in incomplete import. Consider using smaller file chunks.');
     }
     
     // Show success message for large file processing
     if (fileInfo.originalFileSize > 20 * 1024 * 1024 && lines.length > 10000) {
-      console.log(`🎉 SUCCESS: Large file (${(fileInfo.originalFileSize / 1024 / 1024).toFixed(1)}MB, ${lines.length.toLocaleString()} lines) loaded successfully!`);
-      console.log('⚡ Import will process all data - this may take a few minutes for very large files.');
     }
     
     // Detect truncation markers
     if (content.includes('[...CONTENT_TRUNCATED_FOR_STORAGE...]')) {
-      console.warn('⚠️ File content contains truncation markers - some data may be missing');
     }
     
     if (lines.length < 2) {
@@ -1822,45 +1687,36 @@ export const processImportData = async (
     }
     
     const headers = parseCSVLine(lines[0]);
-    console.log('Parsed headers:', headers);
-    
     // Get unique mapped columns
     const mappedColumns = [...new Set(Object.values(mappings).filter(col => col !== 'ignore'))];
-    console.log('Mapped columns for new table:', mappedColumns);
-    
     if (mappedColumns.length === 0) {
       throw new Error('No columns mapped for import');
     }
     
     // Always create a new table for each import to avoid column conflicts and data clearing overhead
-    console.log('� Creating new table (fresh import approach)...');
-    
     // Delete any existing table first to clean up old data
     const existingRecord = await findExistingRecord(userData.vorname, userData.nachname, userData.email, userData.company);
-    if (existingRecord && existingRecord.CreatedTableId) {
-      console.log('🗑️ Deleting previous table to make space for new import...');
-      await deleteTable(existingRecord.CreatedTableId);
+    if (existingRecord && existingRecord.field_9206) {
+      try {
+        await deleteTable(existingRecord.field_9206);
+      } catch (deletionError) {
+        // Continue with import even if deletion fails
+      }
     }
     
     // Create new table with current timestamp for uniqueness
     const tableName = `${userData.company}_${userData.vorname}_${userData.nachname}_${new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-')}`;
-    console.log('📋 Creating new table with name:', tableName);
-    
     const tableId = await createNewTable(tableName, mappedColumns);
-    console.log('✅ Table created with ID:', tableId);
-    
     // Clean up any default rows that Baserow might have added automatically
-    const cleanupToken = await ensureFreshToken(); // Use ensureFreshToken for consistency
+    // No need to get token for this as verifyRecordsCreated uses makeApiCall
     const defaultRows = await verifyRecordsCreated(tableId);
 
     if (defaultRows.length > 0) {
-      console.warn(`🚨 Found ${defaultRows.length} default rows – cleaning up...`);
       for (const row of defaultRows) {
         await makeApiCall(`/database/rows/table/${tableId}/${row.id}/`, {
           method: 'DELETE'
         });
       }
-      console.log(`✅ Deleted ${defaultRows.length} default rows from new table`);
     }
 
     // Update the record in table 787 with the new table ID
@@ -1868,15 +1724,13 @@ export const processImportData = async (
     
     // Get fresh field mappings after table setup
     const fieldMappings = await getFieldMappings(tableId, mappedColumns);
-    console.log('Field mappings after table setup:', fieldMappings);
+    // For proxy mode, tokens are handled server-side, no need to get JWT token
+    const jwtToken = config.isProxyEnabled ? 'PROXY_HANDLED' : await ensureFreshToken();
     
-    // Ensure we have a fresh token for the entire import operation
-    console.log('🔑 Ensuring fresh token for import operation...');
-    const jwtToken = await ensureFreshToken();
+    if (!config.isProxyEnabled) {
+    }
 
     // Process data rows with streaming approach for very large files
-    console.log('Starting to import', lines.length - 1, 'data rows');
-    
     const totalDataRows = lines.length - 1;
     const isVeryLargeFile = totalDataRows > PERFORMANCE_CONFIG.LARGE_FILE_THRESHOLD; // Use parallel processing for files over threshold
     
@@ -1896,21 +1750,13 @@ export const processImportData = async (
     let importResults: { attempted: number, created: number, failed: number, failedRecords: any[] };
     
     if (isVeryLargeFile) {
-      console.log(`🚀 Large file detected (${totalDataRows} rows) - using PARALLEL BATCH processing with ${PERFORMANCE_CONFIG.PARALLEL_BATCHES} concurrent batches`);
       importResults = await processVeryLargeFileData(lines, headers, mappings, mappedColumns, fieldMappings, tableId, jwtToken, progressCallback);
     } else {
-      console.log(`📋 Standard file processing (${totalDataRows} rows) - using sequential processing`);
       importResults = await processStandardFileData(lines, headers, mappings, mappedColumns, fieldMappings, tableId, jwtToken, progressCallback);
     }
 
     // Print comprehensive summary
-    console.log('\n🎯 IMPORT SUMMARY:');
-    console.log(`📊 Attempted: ${importResults.attempted}`);
-    console.log(`✅ Created: ${importResults.created}`);
-    console.log(`❌ Failed: ${importResults.failed}`);
-    
     if (importResults.failed > 0) {
-      console.log('\n🔍 FAILURE ANALYSIS:');
       const errorCounts: Record<string, number> = {};
       importResults.failedRecords.forEach(failed => {
         const errorKey = failed.error?.substring(0, 100) || 'Unknown error';
@@ -1918,48 +1764,30 @@ export const processImportData = async (
       });
       
       Object.entries(errorCounts).forEach(([error, count]) => {
-        console.log(`  • ${error}: ${count} records`);
       });
       
       // Show sample failed record data
       if (importResults.failedRecords.length > 0) {
-        console.log('\n🔍 Sample failed record:');
         const sampleFailed = importResults.failedRecords[0];
-        console.log(`  Data: ${JSON.stringify(sampleFailed.data).substring(0, 200)}...`);
-        console.log(`  Error: ${sampleFailed.error}`);
       }
     }
 
     // Reduced delay for faster verification
-    console.log('\n⏳ Waiting 0.5 seconds for Baserow to flush data...');
     await new Promise(resolve => setTimeout(resolve, 500)); // Reduced from 2000ms to 500ms
 
     // Verify records were actually created
-    console.log('Verifying records were created...');
     const verificationRows = await verifyRecordsCreated(tableId);
-    
-    console.log(`\n🔍 VERIFICATION RESULTS:`);
-    console.log(`Import reported created: ${importResults.created}`);
-    console.log(`Verification found: ${verificationRows.length}`);
-    
     if (importResults.created !== verificationRows.length) {
-      console.warn(`⚠️  MISMATCH: Expected ${importResults.created}, but found ${verificationRows.length} records!`);
     } else {
-      console.log(`✅ SUCCESS: All ${importResults.created} records verified successfully!`);
     }
     
     const endTime = performance.now();
     const totalTime = ((endTime - startTime) / 1000).toFixed(2);
-    console.log(`\n⚡ TOTAL IMPORT TIME: ${totalTime} seconds`);
-    console.log(`📊 SPEED: ${(importResults.created / parseFloat(totalTime)).toFixed(1)} records/second`);
-    
     // Clean up IndexedDB storage after successful import
     if (isIndexedDBAvailable() && fileInfo.recordId) {
       try {
         await fileStorage.deleteFile(fileInfo.recordId);
-        console.log('🧹 Cleaned up IndexedDB storage after successful import');
       } catch (cleanupError) {
-        console.warn('⚠️ Could not clean up IndexedDB storage:', cleanupError);
       }
     }
     
@@ -1975,8 +1803,6 @@ export const processImportData = async (
   } catch (error) {
     const endTime = performance.now();
     const totalTime = ((endTime - startTime) / 1000).toFixed(2);
-    console.error(`💥 IMPORT FAILED after ${totalTime} seconds`);
-    console.error('Error processing import data:', error);
     throw error;
   }
 };
@@ -1992,8 +1818,6 @@ const processVeryLargeFileData = async (
   jwtToken: string,
   progressCallback?: (progress: ProgressInfo) => void
 ): Promise<{ attempted: number, created: number, failed: number, failedRecords: any[] }> => {
-  console.log('🚀 Processing very large file with PARALLEL BATCH approach');
-  
   const startTime = performance.now();
   let attempted = 0;
   let created = 0;
@@ -2004,12 +1828,9 @@ const processVeryLargeFileData = async (
   
   // First, prepare all data records
   const allRecords: any[] = [];
-  
-  console.log('📊 Preparing records for parallel processing...');
   for (let i = 1; i < lines.length; i++) {
     // Check for cancellation
     if (IMPORT_ABORT_CONTROLLER?.signal.aborted) {
-      console.log('🛑 Import cancelled by user during preparation');
       throw new Error('Import cancelled by user');
     }
     
@@ -2040,7 +1861,6 @@ const processVeryLargeFileData = async (
         
         // Safety check for missing field mappings
         if (fieldId === undefined) {
-          console.warn(`Warning: Field mapping not found for column "${targetColumn}". Skipping this column.`);
           return;
         }
         
@@ -2058,33 +1878,23 @@ const processVeryLargeFileData = async (
       attempted++;
     }
   }
-
-  console.log(`✅ Prepared ${allRecords.length} records for import`);
-  console.log(`🚀 Starting PARALLEL batch processing with ${PARALLEL_BATCHES} concurrent batches`);
-
   // Split records into batches of 200
   const batches: any[][] = [];
   for (let i = 0; i < allRecords.length; i += BATCH_SIZE) {
     batches.push(allRecords.slice(i, i + BATCH_SIZE));
   }
-
-  console.log(`📦 Created ${batches.length} batches of up to ${BATCH_SIZE} records each`);
-
   // Process batches in parallel groups
   for (let i = 0; i < batches.length; i += PARALLEL_BATCHES) {
     // Check for cancellation
     if (IMPORT_ABORT_CONTROLLER?.signal.aborted) {
-      console.log('🛑 Import cancelled by user during parallel processing');
       throw new Error('Import cancelled by user');
     }
 
     // Refresh token every 10 batch groups to prevent expiration during very long imports
     if (i > 0 && i % (PARALLEL_BATCHES * 10) === 0) {
-      console.log('🔄 Refreshing token for continued processing...');
       try {
         await ensureFreshToken();
       } catch (tokenError) {
-        console.error('❌ Failed to refresh token during processing:', tokenError);
         // Continue with existing token if refresh fails
       }
     }
@@ -2093,14 +1903,10 @@ const processVeryLargeFileData = async (
     const currentBatchGroup = batches.slice(i, i + PARALLEL_BATCHES);
     const batchPromises = currentBatchGroup.map(async (batch, batchIndex) => {
       const globalBatchIndex = i + batchIndex + 1;
-      console.log(`� Processing batch ${globalBatchIndex}/${batches.length} (${batch.length} records) in parallel...`);
-      
       try {
         const batchResults = await processBatchRecords(batch, tableId, jwtToken);
-        console.log(`✅ Batch ${globalBatchIndex} completed: ${batchResults.success} created, ${batchResults.failed} failed`);
         return batchResults;
       } catch (error) {
-        console.error(`❌ Batch ${globalBatchIndex} failed:`, error);
         return { 
           success: 0, 
           failed: batch.length, 
@@ -2110,7 +1916,6 @@ const processVeryLargeFileData = async (
     });
 
     // Wait for all batches in this group to complete
-    console.log(`⏳ Processing ${currentBatchGroup.length} batches in parallel...`);
     const groupResults = await Promise.all(batchPromises);
     
     // Aggregate results
@@ -2127,10 +1932,6 @@ const processVeryLargeFileData = async (
     const recordsPerSecond = processedRecords / Math.max(elapsedTime, 1);
     const remaining = allRecords.length - processedRecords;
     const estimatedRemainingTime = remaining / Math.max(recordsPerSecond, 1);
-
-    console.log(`📈 Progress: ${created} created, ${totalFailed} failed (${percentage.toFixed(1)}% complete)`);
-    console.log(`⚡ Speed: ${Math.round(recordsPerSecond)} records/second`);
-    
     // Call progress callback
     if (progressCallback) {
       progressCallback({
@@ -2155,11 +1956,6 @@ const processVeryLargeFileData = async (
 
   const endTime = performance.now();
   const totalTime = (endTime - startTime) / 1000;
-  console.log(`🎉 PARALLEL PROCESSING COMPLETE!`);
-  console.log(`⚡ Total time: ${totalTime.toFixed(2)} seconds`);
-  console.log(`🚀 Average speed: ${Math.round(created / totalTime)} records/second`);
-  console.log(`📊 Peak throughput: ~${PARALLEL_BATCHES * BATCH_SIZE} records processed concurrently`);
-
   return { attempted, created, failed: totalFailed, failedRecords: allFailedRecords };
 };
 
@@ -2174,15 +1970,12 @@ const processStandardFileData = async (
   jwtToken: string,
   progressCallback?: (progress: ProgressInfo) => void
 ): Promise<{ attempted: number, created: number, failed: number, failedRecords: any[] }> => {
-  console.log('Processing with standard approach');
-  
   const recordsToCreate = [];
   let attempted = 0;
   
   for (let i = 1; i < lines.length; i++) {
     // Check for cancellation
     if (IMPORT_ABORT_CONTROLLER?.signal.aborted) {
-      console.log('🛑 Import cancelled by user during standard file processing');
       throw new Error('Import cancelled by user');
     }
     
@@ -2209,7 +2002,6 @@ const processStandardFileData = async (
         
         // Safety check for missing field mappings
         if (fieldId === undefined) {
-          console.warn(`Warning: Field mapping not found for column "${targetColumn}". Skipping this column.`);
           return;
         }
         
@@ -2226,9 +2018,6 @@ const processStandardFileData = async (
       attempted++;
     }
   }
-
-  console.log(`📊 Total records to create: ${attempted}`);
-
   // Create records in batches with correct batch size for Baserow API
   // Baserow batch API limit is 200 records per batch
   const BATCH_SIZE = 200; // Fixed: Baserow's batch API maximum
@@ -2238,16 +2027,12 @@ const processStandardFileData = async (
   
   for (let i = 0; i < recordsToCreate.length; i += BATCH_SIZE) {
     const batch = recordsToCreate.slice(i, i + BATCH_SIZE);
-    console.log(`🚀 Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(recordsToCreate.length / BATCH_SIZE)}...`);
-    
     const batchResults = await processBatchRecords(batch, tableId, jwtToken);
     created += batchResults.success;
     totalFailed += batchResults.failed;
     allFailedRecords.push(...batchResults.failedRecords);
     
     const percentage = ((created / recordsToCreate.length) * 100);
-    console.log(`📈 Progress: ${created}/${recordsToCreate.length} created, ${totalFailed} failed (${percentage.toFixed(1)}%)`);
-    
     // Call progress callback with detailed information
     if (progressCallback) {
       const remaining = recordsToCreate.length - created;
@@ -2286,21 +2071,16 @@ let CURRENT_BATCH_SIZE = 200; // Start with Baserow's documented limit
 
 // Process a batch of records with enhanced token management
 const processBatchRecords = async (batch: any[], tableId: string, jwtToken: string): Promise<{ success: number, failed: number, failedRecords: any[] }> => {
-  console.log(`🚀 Processing batch of ${batch.length} records with ${BULK_OPERATIONS_DISABLED ? 'individual (bulk disabled)' : 'bulk'} operation...`);
-  
   // Always ensure we have a fresh token for batch operations
   let currentToken: string;
   try {
     currentToken = await ensureFreshToken();
   } catch (tokenError) {
-    console.error('❌ Failed to get fresh token for batch processing:', tokenError);
     throw new Error(`Token refresh failed: ${tokenError instanceof Error ? tokenError.message : 'Unknown token error'}`);
   }
   
   // Skip bulk if it's been disabled due to repeated failures
   if (!BULK_OPERATIONS_DISABLED) {
-    console.log('Sample record for bulk API:', JSON.stringify(batch[0], null, 2));
-    
     // Try bulk creation first (much faster)
     try {
       // First, try with user_field_names: true (might allow column names instead of field_IDs)
@@ -2316,7 +2096,6 @@ const processBatchRecords = async (batch: any[], tableId: string, jwtToken: stri
 
       if (bulkResponse.ok) {
         const bulkResult = await bulkResponse.json();
-        console.log(`✅ Bulk creation successful: ${batch.length} records created`);
         // Reset failure count on success
         BULK_FAILURE_COUNT = 0;
         return { 
@@ -2329,7 +2108,6 @@ const processBatchRecords = async (batch: any[], tableId: string, jwtToken: stri
         
         // Handle token expiry specifically
         if (bulkResponse.status === 401) {
-          console.warn('🔑 Token expired during bulk operation, getting fresh token...');
           clearJWTTokenCache(); // Clear cache before refresh
           currentToken = await getJWTToken();
           
@@ -2341,7 +2119,6 @@ const processBatchRecords = async (batch: any[], tableId: string, jwtToken: stri
           
           if (retryBulkResponse.ok) {
             const retryBulkResult = await retryBulkResponse.json();
-            console.log(`✅ Bulk creation successful after token refresh: ${batch.length} records created`);
             BULK_FAILURE_COUNT = 0;
             return { 
               success: batch.length, 
@@ -2350,18 +2127,11 @@ const processBatchRecords = async (batch: any[], tableId: string, jwtToken: stri
             };
           }
         }
-        
-        console.warn(`⚠️ Bulk creation failed (${bulkResponse.status}): ${errorText}`);
-        
         // Check if it's a batch size issue
         if (errorText.includes('max_length') || errorText.includes('200 elements')) {
-          console.warn('🔍 Detected batch size limit issue - this batch is too large');
-          console.warn(`📊 Current batch size: ${batch.length} records`);
-          console.warn('💡 Will fall back to individual processing for this batch');
         }
         
         // Try without user_field_names flag
-        console.log('Retrying bulk operation without user_field_names flag...');
         bulkPayload = { items: batch, user_field_names: false };
         
         const retryResponse = await makeApiCall(`/database/rows/table/${tableId}/batch/`, {
@@ -2371,7 +2141,6 @@ const processBatchRecords = async (batch: any[], tableId: string, jwtToken: stri
         
         if (retryResponse.ok) {
           const retryResult = await retryResponse.json();
-          console.log(`✅ Bulk creation successful on retry: ${batch.length} records created`);
           BULK_FAILURE_COUNT = 0; // Reset on success
           return { 
             success: batch.length, 
@@ -2380,14 +2149,10 @@ const processBatchRecords = async (batch: any[], tableId: string, jwtToken: stri
           };
         } else {
           const retryErrorText = await retryResponse.text();
-          console.warn(`⚠️ Bulk creation retry also failed (${retryResponse.status}): ${retryErrorText}`);
-          
           // Check if it's a batch size issue
           if (retryErrorText.includes('max_length') || retryErrorText.includes('200 elements')) {
-            console.warn('🔍 Detected batch size limit issue - bulk operations may need smaller batches');
             if (CURRENT_BATCH_SIZE > 100) {
               CURRENT_BATCH_SIZE = 100;
-              console.warn(`📉 Reducing batch size to ${CURRENT_BATCH_SIZE} for future batches`);
             }
           }
           
@@ -2396,16 +2161,13 @@ const processBatchRecords = async (batch: any[], tableId: string, jwtToken: stri
           // Disable bulk operations if they fail too many times  
           if (BULK_FAILURE_COUNT >= 3) {
             BULK_OPERATIONS_DISABLED = true;
-            console.warn(`🚫 Bulk operations disabled after ${BULK_FAILURE_COUNT} failures. Switching to individual processing for remaining batches.`);
           }
         }
       }
     } catch (bulkError) {
-      console.warn('⚠️ Bulk creation error, falling back to individual creation:', bulkError.message);
       BULK_FAILURE_COUNT++;
       if (BULK_FAILURE_COUNT >= 3) {
         BULK_OPERATIONS_DISABLED = true;
-        console.warn(`🚫 Bulk operations disabled after ${BULK_FAILURE_COUNT} failures.`);
       }
     }
   }
@@ -2424,7 +2186,6 @@ const processBatchRecords = async (batch: any[], tableId: string, jwtToken: stri
       createRecordInNewTable(tableId, recordData, currentToken) // Use fresh token
         .then(() => ({ success: true, recordData: null, error: null }))
         .catch(error => {
-          console.error(`❌ Failed record ${i + index + 1}:`, error.message);
           return { success: false, recordData, error: error.message };
         })
     );
@@ -2448,51 +2209,38 @@ const processBatchRecords = async (batch: any[], tableId: string, jwtToken: stri
       // No delay at all for maximum speed!
     }
   }
-  
-  console.log(`✅ Individual creation complete: ${successCount} successful, ${failedCount} failed`);
   return { success: successCount, failed: failedCount, failedRecords };
 };
 
 // Get field mappings (column name to field ID) after table setup
 const getFieldMappings = async (tableId: string, columnNames: string[]): Promise<Record<string, number>> => {
   try {
-    console.log('Fetching field mappings for table:', tableId, 'columns:', columnNames);
-    
     const response = await makeJWTApiCall(`/database/fields/table/${tableId}/`, {
       method: 'GET'
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('Failed to fetch field mappings:', errorText);
       throw new Error(`Failed to fetch updated field mappings: ${errorText}`);
     }
 
     const fields = await response.json();
-    console.log('Current table fields for mapping:', fields);
-    
     const mappings: Record<string, number> = {};
     
     // Map column names to field IDs
     fields.forEach((field: any) => {
       if (columnNames.includes(field.name)) {
         mappings[field.name] = field.id;
-        console.log(`Mapped column "${field.name}" to field ID ${field.id}`);
       }
     });
-    
-    console.log('Final field mappings:', mappings);
-    
     // Verify we have mappings for all columns
     const missingMappings = columnNames.filter(col => !mappings[col]);
     if (missingMappings.length > 0) {
-      console.error('Missing field mappings for columns:', missingMappings);
       throw new Error(`Missing field mappings for columns: ${missingMappings.join(', ')}`);
     }
     
     return mappings;
   } catch (error) {
-    console.error('Error getting field mappings:', error);
     throw error;
   }
 };
@@ -2561,7 +2309,6 @@ const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken
       
       // Handle token expiry for 401 errors
       if (createResponse.status === 401 && retryCount < MAX_RETRIES) {
-        console.log('🔑 Token expired in individual creation, retrying...');
         return await createRecordInNewTable(tableId, recordData, jwtToken, retryCount + 1);
       }
       
@@ -2573,7 +2320,6 @@ const createRecordInNewTable = async (tableId: string, recordData: any, jwtToken
   } catch (error) {
     // Only retry on token errors
     if (error instanceof Error && error.message.includes('401') && retryCount < MAX_RETRIES) {
-      console.log('🔄 Retrying individual record creation with fresh token...');
       const freshToken = await getJWTToken();
       return await createRecordInNewTable(tableId, recordData, freshToken, retryCount + 1);
     }
@@ -2593,15 +2339,12 @@ export const verifyRecordsCreated = async (tableId: string): Promise<any[]> => {
     let iterations = 0;
 
     while (hasMoreRecords && iterations < MAX_ITERATIONS) {
-      console.log(`Fetching records batch ${iterations + 1} (offset: ${offset}, limit: ${LIMIT})...`);
-      
       const response = await makeApiCall(`/database/rows/table/${tableId}/?limit=${LIMIT}&offset=${offset}`, {
         method: 'GET'
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error('Failed to fetch table rows:', errorText);
         throw new Error(`Failed to fetch table rows: ${errorText}`);
       }
 
@@ -2610,9 +2353,6 @@ export const verifyRecordsCreated = async (tableId: string): Promise<any[]> => {
       
       // Add current batch to all records
       allRecords.push(...batchRecords);
-      
-      console.log(`Fetched ${batchRecords.length} rows in this batch. Total fetched so far: ${allRecords.length} rows`);
-      
       // Check if we have more records to fetch
       hasMoreRecords = batchRecords.length === LIMIT;
       offset += LIMIT;
@@ -2625,13 +2365,9 @@ export const verifyRecordsCreated = async (tableId: string): Promise<any[]> => {
     }
 
     if (iterations >= MAX_ITERATIONS) {
-      console.warn(`⚠️ Maximum iterations (${MAX_ITERATIONS}) reached. There might be more records to fetch.`);
     }
-
-    console.log(`✅ Verification complete. Total records retrieved from table ${tableId}: ${allRecords.length}`);
     return allRecords;
   } catch (error) {
-    console.error('Error verifying records:', error);
     throw error;
   }
 };

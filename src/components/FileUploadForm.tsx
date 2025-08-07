@@ -97,7 +97,6 @@ const FileUploadForm = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
     if (!validateForm()) {
       return;
     }
@@ -111,7 +110,6 @@ const FileUploadForm = () => {
         type: formData.file!.type,
         size: formData.file!.size,
       }));
-
       await uploadToBaserow({
         vorname: formData.vorname,
         nachname: formData.nachname,
@@ -119,7 +117,6 @@ const FileUploadForm = () => {
         company: formData.company,
         file: formData.file!,
       });
-
       toast({
         title: "Upload erfolgreich",
         description: "Ihre Daten wurden erfolgreich hochgeladen.",
@@ -129,15 +126,11 @@ const FileUploadForm = () => {
       navigate('/column-mapping');
 
     } catch (error) {
-      console.error('Upload error:', error);
-      
       let errorMessage = "Beim Hochladen ist ein Fehler aufgetreten. Bitte versuchen Sie es erneut.";
       
       if (error instanceof Error) {
         // Show the specific error message from the API
         errorMessage = error.message;
-        console.error('Specific error:', error.message);
-        console.error('Error stack:', error.stack);
       }
       
       toast({

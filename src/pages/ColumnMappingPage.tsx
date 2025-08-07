@@ -71,7 +71,6 @@ const ColumnMappingPage = () => {
       }
 
     } catch (error) {
-      console.error('Error loading file info:', error);
       toast({
         title: "Fehler",
         description: "Fehler beim Laden der Datei-Informationen.",
@@ -103,8 +102,6 @@ const ColumnMappingPage = () => {
       });
 
     } catch (error) {
-      console.error('Import error:', error);
-      
       // Don't show error toast for user cancellation
       if (error instanceof Error && error.message === 'Import cancelled by user') {
         return;
