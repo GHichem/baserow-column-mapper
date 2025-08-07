@@ -16,4 +16,6 @@ export default defineConfig(() => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  logLevel: 'warn' as const, // Only show warnings and errors, not info
+  clearScreen: false, // Don't clear screen on restart
 }));

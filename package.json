@@ -5,15 +5,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --host",
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
-    "dev:backend": "cd backend && npm run dev",
-    "dev:frontend": "vite",
-    "dev:full": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\" --names \"backend,frontend\" --prefix-colors \"bgBlue,bgGreen\"",
-    "start": "npm run dev:full"
+    "dev:backend": "cd backend && npm start",
+    "dev:frontend": "vite --host",
+    "dev:full": "concurrently --kill-others --prefix-colors \"blue,green\" --prefix \"[{name}]\" \"npm run dev:backend\" \"npm run dev:frontend\" --names \"backend,frontend\"",
+    "start": "npm run dev:full",
+    "start:minimal": "bash start-minimal.sh",
+    "start:quiet": "concurrently --kill-others --prefix-colors \"dim,dim\" --prefix \"\" --raw \"npm run dev:backend\" \"npm run dev:frontend\""
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",
