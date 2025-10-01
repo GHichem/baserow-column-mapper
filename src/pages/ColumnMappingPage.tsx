@@ -28,6 +28,7 @@ interface UploadedFileInfo {
     nachname: string;
     email: string;
     company: string;
+    zielgruppe?: string;
   };
   fileName: string;
 }

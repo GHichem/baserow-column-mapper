@@ -428,6 +428,7 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
                 const shouldHighlight = highlightUnmapped && isUnmapped;
                 const isSpeciallyHighlighted = highlightedColumns.has(userColumn);
                 
+                const isLocked = mapping.isMatched && mapping.similarity === 100;
                 return (
                   <div
                     key={index}
@@ -471,14 +472,16 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
                           }`} />
                         </div>
                         
-                        <div className="min-w-0 flex-1">
-                          <SimpleSelect
-                            id={`column-select-${index}`}
-                            value={mapping.isIgnored ? 'ignore' : mapping.targetColumn || ''}
-                            onValueChange={(value) => handleMappingChange(userColumn, value)}
-                            placeholder="Zielfeld auswählen..."
-                            options={selectOptions}
-                          />
+                        <div className="min-w-0 flex-1" title={isLocked ? 'Automatische 100 %-Zuordnung – nicht veränderbar.' : undefined}>
+                          <div className={isLocked ? 'pointer-events-none opacity-70' : ''}>
+                            <SimpleSelect
+                              id={`column-select-${index}`}
+                              value={mapping.isIgnored ? 'ignore' : mapping.targetColumn || ''}
+                              onValueChange={(value) => handleMappingChange(userColumn, value)}
+                              placeholder="Zielfeld auswählen..."
+                              options={selectOptions}
+                            />
+                          </div>
                         </div>
                       </div>
                       

@@ -6,6 +6,7 @@ interface UploadData {
   nachname: string;
   email: string;
   company: string;
+  zielgruppe: string;
   file: File;
 }
 
@@ -136,9 +137,22 @@ const initializeConfig = async () => {
         BASEROW_CONFIG.tableId = serverConfig.tableId;
         BASEROW_CONFIG.targetTableId = serverConfig.targetTableId;
         BASEROW_CONFIG.databaseId = serverConfig.databaseId;
+        console.log('Successfully loaded config from proxy server:', {
+          tableId: BASEROW_CONFIG.tableId,
+          targetTableId: BASEROW_CONFIG.targetTableId,
+          databaseId: BASEROW_CONFIG.databaseId
+        });
+      } else {
+        console.error('Failed to fetch config from proxy server, response not ok:', response.status);
+        // Fallback to default values if proxy server config fails
+        console.warn('Using default configuration values');
       }
     } catch (error) {
+      console.error('Failed to fetch config from proxy server:', error);
+      console.warn('Using default configuration values');
     }
+  } else {
+    console.log('Proxy mode disabled, using default configuration');
   }
 };
 
@@ -531,193 +545,7 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
     // Clear any previous temporary file storage
     TEMP_FILE_CONTENT = null;
     TEMP_FILE_METADATA = null;
-    
-    // Check for existing record first
-    const existingRecord = await findExistingRecord(data.vorname, data.nachname, data.email, data.company);
-    
-    if (existingRecord) {
-      // Update existing record and delete old table if exists
-      
-      // Delete old table if it exists - with safety check
-      if ('field_9206' in existingRecord && existingRecord.field_9206) {
-        try {
-          await deleteTable(existingRecord.field_9206);
-        } catch (deletionError) {
-          // Continue with update even if deletion fails
-        }
-      }
-      
-      const updateResponse = await makeApiCall(`/database/rows/table/${BASEROW_CONFIG.tableId}/${existingRecord.id}/`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          field_8123: data.vorname,      // Vorname
-          field_8124: data.nachname,     // Nachname
-          field_8127: data.email,        // EMAIL
-          field_8125: data.company,      // Company
-          field_9206: null,              // CreatedTableId - Will be updated after new table creation
-        }),
-      });
-
-      if (!updateResponse.ok) {
-        throw new Error('Failed to update existing record');
-      }
-
-      const updateResult = await updateResponse.json();
-        // Store file info for mapping page - process file in chunks for large files
-        try {
-          const fileContent = await processFileForStorage(data.file); // Use storage-optimized processing
-          
-          // For very large files, store only header information instead of full content
-          const isLargeFile = data.file.size > 10 * 1024 * 1024; // 10MB threshold
-          let contentToStore = fileContent;
-          
-          const fileInfo = {
-            file: { url: existingRecord.Datei?.[0]?.url || '' },
-            userData: data,
-            fileName: data.file.name,
-            fileContent: contentToStore,
-            recordId: existingRecord.id,
-          isLargeFile: isLargeFile,
-          originalFileSize: data.file.size,
-          fullFileContent: fileContent // Always store full content as backup
-        };
-        
-        try {
-          const fileInfoString = JSON.stringify(fileInfo);
-          
-          // Clear any existing file info to free up storage space
-          sessionStorage.removeItem('uploadedFileInfo');
-          
-          sessionStorage.setItem('uploadedFileInfo', fileInfoString);
-        } catch (storageError) {
-          // Use same fallback strategy as new records
-          const lines = fileContent.split('\n');
-          let optimizedContent = '';
-          
-          if (lines.length > 2000) {
-            const headerLines = lines.slice(0, 1000).join('\n');
-            const footerLines = lines.slice(-100).join('\n');
-            optimizedContent = headerLines + '\n\n[...CONTENT_TRUNCATED_FOR_STORAGE...]\n\n' + footerLines;
-          } else {
-            optimizedContent = fileContent;
-          }
-          
-          const optimizedFileInfo = {
-            ...fileInfo,
-            fileContent: optimizedContent,
-            isOptimized: lines.length > 2000,
-            totalLines: lines.length
-          };
-          
-          try {
-            sessionStorage.setItem('uploadedFileInfo', JSON.stringify(optimizedFileInfo));
-            
-            // 🆕 CRITICAL: Store complete file content using IndexedDB for large files
-            if (data.file.size > 10 * 1024 * 1024 && typeof fileContent === 'string' && isIndexedDBAvailable()) {
-              try {
-                await fileStorage.storeFile(existingRecord.id, fileContent, {
-                  name: data.file.name,
-                  size: data.file.size,
-                  baserowUrl: fileInfo.file?.url || '',
-                });
-              } catch (indexedDBError) {
-                // Fallback to temporary memory
-                TEMP_FILE_CONTENT = fileContent;
-                TEMP_FILE_METADATA = {
-                  name: data.file.name,
-                  size: data.file.size,
-                  recordId: existingRecord.id
-                };
-              }
-            } else if (data.file.size > 10 * 1024 * 1024 && typeof fileContent === 'string') {
-              // Fallback to temporary memory if IndexedDB is not available
-              TEMP_FILE_CONTENT = fileContent;
-              TEMP_FILE_METADATA = {
-                name: data.file.name,
-                size: data.file.size,
-                recordId: existingRecord.id
-              };
-            }
-            
-            if (lines.length > 2000) {
-            }
-          } catch (finalError) {
-            // Ultra-minimal storage: Only headers + metadata (for column mapping only)
-            const headerOnlyContent = lines.slice(0, 5).join('\n'); // Just first 5 lines for headers
-            
-            const ultraMinimalFileInfo = {
-              file: fileInfo.file,
-              userData: fileInfo.userData,
-              fileName: fileInfo.fileName,
-              fileContent: headerOnlyContent, // Only headers
-              recordId: fileInfo.recordId,
-              isLargeFile: true,
-              originalFileSize: fileInfo.originalFileSize,
-              needsReprocessing: true,
-              isHeaderOnly: true, // Flag to indicate only headers available
-              totalLines: lines.length,
-              canImportFromOriginal: true, // 🆕 Flag to indicate we can reprocess from original data
-              storageWarning: `Große Datei (${(fileInfo.originalFileSize / 1024 / 1024).toFixed(1)}MB) - Spalten-Mapping verfügbar, Import verarbeitet komplette Datei neu.`
-            };
-            
-            try {
-              sessionStorage.setItem('uploadedFileInfo', JSON.stringify(ultraMinimalFileInfo));
-              
-              // 🆕 CRITICAL: Store complete file content using IndexedDB or temporary memory
-              if (data.file.size > 10 * 1024 * 1024 && typeof fileContent === 'string') {
-                if (isIndexedDBAvailable()) {
-                  try {
-                    await fileStorage.storeFile(existingRecord.id, fileContent, {
-                      name: data.file.name,
-                      size: data.file.size,
-                      baserowUrl: fileInfo.file?.url || '',
-                    });
-                  } catch (indexedDBError) {
-                    // Fallback to temporary memory
-                    TEMP_FILE_CONTENT = fileContent;
-                    TEMP_FILE_METADATA = {
-                      name: data.file.name,
-                      size: data.file.size,
-                      recordId: existingRecord.id
-                    };
-                  }
-                } else {
-                  // Fallback to temporary memory if IndexedDB is not available
-                  TEMP_FILE_CONTENT = fileContent;
-                  TEMP_FILE_METADATA = {
-                    name: data.file.name,
-                    size: data.file.size,
-                    recordId: existingRecord.id
-                  };
-                }
-              }
-            } catch (emergencyError) {
-              
-              // Absolute last resort: Store without any content
-              const emergencyFileInfo = {
-                file: fileInfo.file,
-                userData: fileInfo.userData,
-                fileName: fileInfo.fileName,
-                fileContent: '', // No content
-                recordId: fileInfo.recordId,
-                isLargeFile: true,
-                originalFileSize: fileInfo.originalFileSize,
-                needsReprocessing: true,
-                requiresFileReupload: true, // Flag indicating file must be re-uploaded
-                storageWarning: `Datei zu groß für Browser-Speicher (${(fileInfo.originalFileSize / 1024 / 1024).toFixed(1)}MB). Bitte verwenden Sie eine kleinere Datei.`
-              };
-              
-              sessionStorage.setItem('uploadedFileInfo', JSON.stringify(emergencyFileInfo));
-            }
-          }
-        }
-        
-      } catch (processingError) {
-        throw new Error('Fehler beim Verarbeiten der Datei. Die Datei ist möglicherweise zu groß oder beschädigt.');
-      }
-      
-      return;
-    }
+    // Always create a NEW record for each upload (allow duplicates)
 
     // First, upload the file to Baserow with timeout handling
     const fileFormData = new FormData();
@@ -752,6 +580,7 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
         field_8124: data.nachname,     // Nachname  
         field_8127: data.email,        // EMAIL
         field_8125: data.company,      // Company
+        field_53605: data.zielgruppe,  // Zielgruppe (new)
         field_8126: [fileUploadResult], // Datei
         field_9206: null,              // CreatedTableId - Will be updated after table creation
       };
@@ -1153,6 +982,38 @@ const findExistingRecord = async (vorname: string, nachname: string, email: stri
     return existingRecord || null;
   } catch (error) {
     return null;
+  }
+};
+
+// Helper: list tables in database to check existing names
+const listTablesInDatabase = async (): Promise<Array<{ id: number; name: string }>> => {
+  const response = await makeJWTApiCall(`/database/tables/database/${BASEROW_CONFIG.databaseId}/`, {
+    method: 'GET',
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Failed to list tables: ${errorText}`);
+  }
+  const data = await response.json();
+  return Array.isArray(data) ? data : (data.results || []);
+};
+
+// Helper: compute next available table name with incremental suffix
+const getUniqueTableName = async (baseName: string): Promise<string> => {
+  try {
+    const tables = await listTablesInDatabase();
+    const existingNames = new Set<string>(tables.map(t => t.name));
+    if (!existingNames.has(baseName)) return baseName;
+
+    let suffix = 1;
+    while (existingNames.has(`${baseName}_${suffix}`)) {
+      suffix += 1;
+      if (suffix > 9999) break;
+    }
+    return `${baseName}_${suffix}`;
+  } catch {
+    // On failure, fallback to baseName to avoid blocking
+    return baseName;
   }
 };
 
@@ -1693,20 +1554,14 @@ export const processImportData = async (
       throw new Error('No columns mapped for import');
     }
     
-    // Always create a new table for each import to avoid column conflicts and data clearing overhead
-    // Delete any existing table first to clean up old data
-    const existingRecord = await findExistingRecord(userData.vorname, userData.nachname, userData.email, userData.company);
-    if (existingRecord && existingRecord.field_9206) {
-      try {
-        await deleteTable(existingRecord.field_9206);
-      } catch (deletionError) {
-        // Continue with import even if deletion fails
-      }
-    }
-    
-    // Create new table with current timestamp for uniqueness
-    const tableName = `${userData.company}_${userData.vorname}_${userData.nachname}_${new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-')}`;
-    const tableId = await createNewTable(tableName, mappedColumns);
+    // Always create a new table. Name format: {Firma}_{Zielgruppe}_{YYYY-MM-DD}; ensure uniqueness with suffix.
+    const company = (userData.company || '').trim();
+    const zielgruppe = (userData.zielgruppe || '').trim();
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const rawBaseName = `${company}_${zielgruppe}_${dateStr}`.replace(/\s+/g, ' ').trim();
+    const baseName = rawBaseName.replace(/\s/g, '_');
+    const uniqueName = await getUniqueTableName(baseName);
+    const tableId = await createNewTable(uniqueName, mappedColumns);
     // Clean up any default rows that Baserow might have added automatically
     // No need to get token for this as verifyRecordsCreated uses makeApiCall
     const defaultRows = await verifyRecordsCreated(tableId);
@@ -1720,7 +1575,7 @@ export const processImportData = async (
     }
 
     // Update the record in table 787 with the new table ID
-    await updateRecordWithTableId(fileInfo.recordId, tableId);
+  await updateRecordWithTableId(fileInfo.recordId, tableId);
     
     // Get fresh field mappings after table setup
     const fieldMappings = await getFieldMappings(tableId, mappedColumns);
@@ -1796,7 +1651,7 @@ export const processImportData = async (
       created: importResults.created, 
       updated: 0, 
       tableId, 
-      tableName,
+  tableName: uniqueName,
       failed: importResults.failed,
       verified: verificationRows.length
     };

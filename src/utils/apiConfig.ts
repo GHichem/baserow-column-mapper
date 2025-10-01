@@ -1,41 +1,29 @@
-// API Configuration for Proxy Server
-const API_CONFIG = {
-  proxyBaseUrl: import.meta.env.VITE_PROXY_URL || 'http://localhost:3001',
-  isProxyEnabled: import.meta.env.VITE_USE_PROXY === 'true' // Explicitly check for 'true'
-};
+// API Configuration for Proxy Server with LAN-friendly defaults
+const resolveProxyBaseUrl = () => {
+  // Prefer explicit env when it is not localhost, otherwise build from current host
+  const envUrl = (import.meta as any).env?.VITE_PROXY_URL as string | undefined;
+  const isLocalhost = (url?: string) => !!url && /^https?:\/\/localhost(?::|$)/i.test(url);
 
-// Auto-disable proxy if server is not reachable
-let proxyServerAvailable = false; // Default to false for safety
+  // Compute a dynamic default like http://<current-hostname>:3051
+  const dynamicDefault = typeof window !== 'undefined'
+    ? `${window.location.protocol}//${window.location.hostname}:3051`
+    : 'http://157.180.9.225:3051';
 
-const checkProxyServer = async () => {
-  if (!API_CONFIG.isProxyEnabled) return false;
-  
-  try {
-    const response = await fetch(`${API_CONFIG.proxyBaseUrl}/health`, {
-      method: 'GET',
-      signal: AbortSignal.timeout(3000) // 3 second timeout
-    });
-    return response.ok;
-  } catch (error) {
-    return false;
+  if (envUrl && envUrl.trim() && !isLocalhost(envUrl)) {
+    return envUrl.trim();
   }
+  return dynamicDefault;
 };
 
-// Check proxy server availability on module load (but don't block)
-if (API_CONFIG.isProxyEnabled) {
-  checkProxyServer().then(available => {
-    proxyServerAvailable = available;
-  });
-}
-
-// Updated API config with fallback - always returns current state
-const getApiConfig = () => {
-  const actuallyEnabled = API_CONFIG.isProxyEnabled && proxyServerAvailable;
-  
-  return {
-    proxyBaseUrl: API_CONFIG.proxyBaseUrl,
-    isProxyEnabled: actuallyEnabled
-  };
+const API_CONFIG = {
+  proxyBaseUrl: resolveProxyBaseUrl(),
+  isProxyEnabled: (import.meta as any).env?.VITE_USE_PROXY !== 'false' // Enable proxy by default, only disable if explicitly set to 'false'
 };
+
+// Updated API config: enforce proxy when explicitly enabled.
+const getApiConfig = () => ({
+  proxyBaseUrl: API_CONFIG.proxyBaseUrl,
+  isProxyEnabled: API_CONFIG.isProxyEnabled
+});
 
 export { API_CONFIG, getApiConfig };

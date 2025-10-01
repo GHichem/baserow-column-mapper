@@ -2,32 +2,68 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import multer from 'multer';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 // Load environment variables
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const MAX_UPLOAD_MB = parseInt(process.env.MAX_UPLOAD_MB || '500', 10); // configurable, default 500MB
+const SERVE_FRONTEND = process.env.SERVE_FRONTEND === 'true';
 
 // CORS configuration
-const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') || [
-  'http://localhost:5173',
-  'http://localhost:4173',
-  'http://localhost:8080'
+// Allow specified origins from env; otherwise accept common localhost and LAN dev ports
+const defaultOrigins = [
+  'http://localhost:5173', 'http://127.0.0.1:5173',
+  'http://localhost:4173', 'http://127.0.0.1:4173',
+  'http://localhost:8080', 'http://127.0.0.1:8080'
 ];
+const envOrigins = process.env.ALLOWED_ORIGINS?.split(',').map(s => s.trim()).filter(Boolean) || [];
+const allowedOrigins = envOrigins.length ? envOrigins : defaultOrigins;
 
+// Use a function to allow same-network hosts on common dev ports
 app.use(cors({
-  origin: allowedOrigins,
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    try {
+      const url = new URL(origin);
+      const isHttp = url.protocol === 'http:' || url.protocol === 'https:';
+      const allowedPorts = new Set(['8080', '5173', '4173', '3050', '3051']);
+      if (isHttp && allowedPorts.has(url.port || '80')) {
+        return callback(null, true);
+      }
+    } catch (e) {}
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true
 }));
 
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+// Keep JSON/urlencoded limits modest; large CSV files go through multipart uploads, not JSON
+app.use(express.json({ limit: process.env.MAX_JSON_BODY || '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: process.env.MAX_JSON_BODY || '10mb' }));
 
-// Configure multer for file uploads
-const upload = multer({ 
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
+// Configure multer for large file uploads using disk storage (safer than memory for 500MB)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const tempUploadDir = process.env.UPLOAD_TMP_DIR || path.join(os.tmpdir(), 'column-mapper-uploads');
+if (!fs.existsSync(tempUploadDir)) {
+  fs.mkdirSync(tempUploadDir, { recursive: true });
+}
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, tempUploadDir),
+  filename: (req, file, cb) => {
+    const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    cb(null, unique + '-' + file.originalname);
+  }
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024 }
 });
 
 // Store JWT token in memory (will be refreshed as needed)
@@ -93,15 +129,13 @@ app.all('/api/baserow/*', upload.single('file'), async (req, res) => {
     const isFileUpload = req.file || req.path.includes('/user-files/upload-file');
     
     if (isFileUpload && req.file) {
-      // Handle file upload with FormData
+      // Stream file from disk via FormData
       const FormData = (await import('form-data')).default;
       const formData = new FormData();
-      formData.append('file', req.file.buffer, {
+      formData.append('file', fs.createReadStream(req.file.path), {
         filename: req.file.originalname,
         contentType: req.file.mimetype
       });
-
-      // Add form data if present in request body
       if (req.body) {
         Object.keys(req.body).forEach(key => {
           if (req.body[key] !== undefined && req.body[key] !== null) {
@@ -109,30 +143,21 @@ app.all('/api/baserow/*', upload.single('file'), async (req, res) => {
           }
         });
       }
-
-      const headers = {
-        'Authorization': `Token ${process.env.BASEROW_API_TOKEN}`,
-        ...formData.getHeaders()
-      };
-      
-      // Use axios for better form-data handling
+      const headers = { 'Authorization': `Token ${process.env.BASEROW_API_TOKEN}`, ...formData.getHeaders() };
       const axios = (await import('axios')).default;
-      
       try {
-        const response = await axios.post(baserowUrl, formData, { headers });
-        res.status(response.status).json(response.data);
-        return;
-      } catch (axiosError) {
-        if (axiosError.response) {
-          res.status(axiosError.response.status).json(axiosError.response.data);
+        const upstream = await axios.post(baserowUrl, formData, { headers, maxContentLength: Infinity, maxBodyLength: Infinity });
+        res.status(upstream.status).json(upstream.data);
+      } catch (err) {
+        if (err.response) {
+          res.status(err.response.status).json(err.response.data);
         } else {
-          res.status(500).json({ 
-            error: 'File upload failed', 
-            message: axiosError.message 
-          });
+          res.status(500).json({ error: 'File upload failed', message: err.message });
         }
-        return;
+      } finally {
+        if (req.file?.path) fs.unlink(req.file.path, () => {});
       }
+      return;
     }
 
     // Regular API request handling
@@ -146,12 +171,15 @@ app.all('/api/baserow/*', upload.single('file'), async (req, res) => {
     const cleanedHeaders = Object.keys(req.headers).filter(h => safeHeaders.includes(h.toLowerCase()));
 
     // Authentication logic
-    const isTableOperation = baserowPath.includes('/fields/table/') || 
-                            baserowPath.includes('/import/') || 
-                            (req.method === 'POST' && baserowPath.includes('/tables/database/')) ||
-                            (req.method === 'DELETE' && baserowPath.includes('/tables/')) || // Table deletion
-                            baserowPath.includes('/fields/') || // Field operations like PATCH /database/fields/47018/
-                            baserowPath.includes('/database/fields/'); // All field operations
+    // Treat any table/field management endpoints as JWT-protected operations.
+    // This includes GET/POST/DELETE on /database/tables/... and all /fields/... endpoints.
+    const isTableOperation =
+      baserowPath.includes('/fields/table/') ||
+      baserowPath.includes('/import/') ||
+      baserowPath.includes('/database/fields/') ||
+      baserowPath.includes('/fields/') ||
+      baserowPath.includes('/database/tables/') ||
+      baserowPath.includes('/tables/');
     const isRowOperation = req.method === 'POST' && baserowPath.includes('/rows/');
 
     if (isTableOperation) {
@@ -227,7 +255,21 @@ app.all('/api/baserow/*', upload.single('file'), async (req, res) => {
       error: 'Proxy server error', 
       message: error.message 
     });
+  } finally {
+    // Cleanup any temp file if present and not already removed
+    if (req.file?.path && fs.existsSync(req.file.path)) {
+      fs.unlink(req.file.path, () => {});
+    }
   }
+});
+
+// Configuration endpoint used by the frontend to get static IDs
+app.get('/api/config', (req, res) => {
+  res.json({
+    tableId: process.env.BASEROW_SOURCE_TABLE_ID || '787',
+    targetTableId: process.env.BASEROW_TARGET_TABLE_ID || '790',
+    databaseId: process.env.BASEROW_DATABASE_ID || '207'
+  });
 });
 
 // Health check endpoint
@@ -240,34 +282,58 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Alias health endpoint expected by remote deploy environment
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    path: '/api/health',
+    hasApiToken: !!process.env.BASEROW_API_TOKEN,
+    hasCredentials: !!(process.env.BASEROW_USERNAME && process.env.BASEROW_PASSWORD)
+  });
+});
+
 // File upload endpoint with proxy
 app.post('/api/upload-file', upload.single('file'), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-
-    // You can add file processing logic here before forwarding to Baserow
-    // For now, we'll just return file info
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     res.json({
       filename: req.file.originalname,
       size: req.file.size,
       mimetype: req.file.mimetype,
+      maxUploadMB: MAX_UPLOAD_MB,
       message: 'File received successfully'
     });
   } catch (error) {
-    res.status(500).json({ 
-      error: 'File upload error', 
-      message: error.message 
-    });
+    res.status(500).json({ error: 'File upload error', message: error.message });
+  } finally {
+    if (req.file?.path) fs.unlink(req.file.path, () => {});
   }
 });
 
+// Optionally serve built frontend (enable with SERVE_FRONTEND=true)
+if (SERVE_FRONTEND) {
+  const frontendDist = process.env.FRONTEND_DIST_PATH || path.resolve(__dirname, '../dist');
+  if (fs.existsSync(frontendDist)) {
+    app.use(express.static(frontendDist));
+    // SPA fallback (ignore API routes)
+    app.get(/^(?!\/api\/).+/, (req, res, next) => {
+      const indexFile = path.join(frontendDist, 'index.html');
+      if (fs.existsSync(indexFile)) {
+        res.sendFile(indexFile);
+      } else {
+        next();
+      }
+    });
+  }
+}
+
 // Start server
-app.listen(PORT, () => {
-  // Validate configuration
-  if (!process.env.BASEROW_API_TOKEN) {
-  }
-  if (!process.env.BASEROW_USERNAME || !process.env.BASEROW_PASSWORD) {
-  }
+app.listen(PORT, '0.0.0.0', () => {
+  const masked = (v) => v ? '***set***' : 'MISSING';
+  console.log(`[startup] Column Mapper backend listening on :${PORT}`);
+  console.log(`[startup] Upload tmp dir: ${tempUploadDir} (max ${MAX_UPLOAD_MB}MB per file)`);
+  console.log(`[startup] Frontend serving: ${SERVE_FRONTEND ? 'ENABLED' : 'disabled'} `);
+  console.log(`[startup] Baserow API token: ${masked(process.env.BASEROW_API_TOKEN)}`);
+  console.log(`[startup] Credentials: user=${process.env.BASEROW_USERNAME ? 'set' : 'missing'} pass=${process.env.BASEROW_PASSWORD ? 'set' : 'missing'}`);
 });

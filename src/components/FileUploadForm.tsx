@@ -15,6 +15,7 @@ interface FormData {
   nachname: string;
   email: string;
   company: string;
+  zielgruppe: string;
   file: File | null;
 }
 
@@ -24,6 +25,7 @@ const FileUploadForm = () => {
     nachname: '',
     email: '',
     company: '',
+    zielgruppe: '',
     file: null,
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -83,6 +85,15 @@ const FileUploadForm = () => {
       return false;
     }
 
+    if (!formData.zielgruppe.trim()) {
+      toast({
+        title: "Fehler",
+        description: "Bitte geben Sie die Zielgruppe ein.",
+        variant: "destructive",
+      });
+      return false;
+    }
+
     if (!formData.file) {
       toast({
         title: "Fehler",
@@ -115,6 +126,7 @@ const FileUploadForm = () => {
         nachname: formData.nachname,
         email: formData.email,
         company: formData.company,
+        zielgruppe: formData.zielgruppe,
         file: formData.file!,
       });
       toast({
@@ -197,6 +209,22 @@ const FileUploadForm = () => {
         </div>
 
         <div className="space-y-1.5">
+          <Label htmlFor="zielgruppe" className="text-xs font-medium text-gray-300">
+            Zielgruppe *
+          </Label>
+          <Input
+            id="zielgruppe"
+            name="zielgruppe"
+            type="text"
+            value={formData.zielgruppe}
+            onChange={handleInputChange}
+            placeholder="z. B. Kunden, Leads, Partner"
+            className="bg-slate-700/50 border-slate-600 text-white placeholder:text-gray-400 focus:border-purple-500 focus:ring-purple-500/30 backdrop-blur-sm"
+            required
+          />
+        </div>
+
+        <div className="space-y-1.5">
           <Label htmlFor="email" className="text-xs font-medium text-gray-300">
             E-Mail *
           </Label>
@@ -258,7 +286,15 @@ const FileUploadForm = () => {
       <div className="pt-4 border-t border-slate-700/50">
         <Button
           type="submit"
-          disabled={isSubmitting}
+          disabled={
+            isSubmitting ||
+            !formData.vorname.trim() ||
+            !formData.nachname.trim() ||
+            !formData.email.trim() ||
+            !formData.company.trim() ||
+            !formData.zielgruppe.trim() ||
+            !formData.file
+          }
           className="w-full bg-gradient-to-r from-purple-600 via-pink-600 to-cyan-600 hover:from-purple-700 hover:via-pink-700 hover:to-cyan-700 text-white py-2.5 text-base font-medium transition-all duration-300 shadow-xl shadow-purple-500/30 hover:shadow-purple-500/50 border-0 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isSubmitting ? (

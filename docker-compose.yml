@@ -1,0 +1,40 @@
+services:
+  frontend:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - VITE_API_URL=http://localhost:3001
+      - VITE_USE_PROXY=true
+      - VITE_PROXY_URL=http://backend:3051
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+  backend:
+    build: ./backend
+    ports:
+      - "3051:3051"
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+      - uploads-data:/app/uploads
+    environment:
+      - NODE_ENV=development
+      - PORT=3051
+      - MAX_UPLOAD_MB=500
+      - ALLOWED_ORIGINS=http://localhost:8080,http://127.0.0.1:8080
+    networks:
+      - app-network
+
+volumes:
+  uploads-data:
+
+networks:
+  app-network:
+    driver: bridge
