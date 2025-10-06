@@ -120,6 +120,82 @@ async function getValidJwtToken() {
   return jwtToken;
 }
 
+// Endpoint to get filtered column names from mapping table
+app.get('/api/mapping-columns', async (req, res) => {
+  try {
+    const mappingTableId = process.env.BASEROW_MAPPING_TABLE_ID || '784';
+  const apiToken = process.env.DATENERFASSUNG_BASEROW_API_TOKEN;
+    
+    if (!apiToken) {
+      return res.status(500).json({ error: 'Missing DATENERFASSUNG_BASEROW_API_TOKEN' });
+    }
+
+    // Fetch all rows from the mapping table
+    const response = await fetch(`https://baserow.app-inventor.org/api/database/rows/table/${mappingTableId}/?user_field_names=true`, {
+      headers: {
+        'Authorization': `Token ${apiToken}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch mapping table: ${response.status}`);
+    }
+
+  const data = await response.json();
+  const rows = Array.isArray(data?.results) ? data.results : [];
+    
+    // Filter rows based on the conditions:
+    // Exclude a row ONLY when BOTH are true:
+    // - status (field_7918) is "nicht aktiv"
+    // - Kontaktinfo_Position (field_7927) is "Ist kein Zusatzfilter"
+    // Otherwise, include the row.
+  // Normalize select and multi-select values to plain text before comparison
+    // Convert Baserow field values (strings, objects for single-select, arrays for multi-select)
+    // into a comparable plain text. Prefer the .value property on objects when present.
+    const toText = (v) => {
+      if (v == null) return '';
+      if (typeof v === 'string') return v;
+      if (Array.isArray(v)) {
+        // Join multi-select values by comma
+        return v.map(toText).filter(Boolean).join(',');
+      }
+      if (typeof v === 'object') {
+        if (Object.prototype.hasOwnProperty.call(v, 'value')) return v.value ?? '';
+        // Fallback to common label-ish props
+        const fallback = v.name || v.label || v.text || v.title || v.display_name;
+        if (fallback) return fallback;
+        try { return JSON.stringify(v); } catch { return String(v); }
+      }
+      return String(v);
+    };
+    const norm = (v) => toText(v).trim().toLowerCase();
+
+    const filteredColumns = rows
+      .filter(row => {
+        const status = row.status || row.field_7918;
+        const kontaktPosition = row.Kontaktinfo_Position || row.field_7927;
+        const spaltennamen = row.Spaltennamen || row.field_7920;
+  const statusText = toText(status);
+  const kontaktText = toText(kontaktPosition);
+  const isNichtAktiv = norm(statusText) === 'nicht aktiv';
+  const isKeinZusatz = norm(kontaktText) === 'ist kein zusatzfilter';
+
+        // Include row unless BOTH conditions are true
+        return !(isNichtAktiv && isKeinZusatz);
+      })
+      .map(row => row.Spaltennamen || row.field_7920) // Get the column name from Spaltennamen field
+      .filter(name => name && name.trim()); // Remove empty/null values
+
+  // Return filtered result only
+
+    res.json({ columns: filteredColumns });
+  } catch (error) {
+    console.error('Error fetching mapping columns:', error);
+    res.status(500).json({ error: 'Failed to fetch mapping columns' });
+  }
+});
+
 // Proxy all Baserow API calls
 app.all('/api/baserow/*', upload.single('file'), async (req, res) => {
   try {
@@ -143,7 +219,7 @@ app.all('/api/baserow/*', upload.single('file'), async (req, res) => {
           }
         });
       }
-      const headers = { 'Authorization': `Token ${process.env.BASEROW_API_TOKEN}`, ...formData.getHeaders() };
+      const headers = { 'Authorization': `Token ${process.env.DATENERFASSUNG_BASEROW_API_TOKEN}`, ...formData.getHeaders() };
       const axios = (await import('axios')).default;
       try {
         const upstream = await axios.post(baserowUrl, formData, { headers, maxContentLength: Infinity, maxBodyLength: Infinity });
@@ -186,7 +262,7 @@ app.all('/api/baserow/*', upload.single('file'), async (req, res) => {
       const jwt = await getValidJwtToken();
       headers['Authorization'] = `JWT ${jwt}`;
     } else {
-      headers['Authorization'] = `Token ${process.env.BASEROW_API_TOKEN}`;
+      headers['Authorization'] = `Token ${process.env.DATENERFASSUNG_BASEROW_API_TOKEN}`;
     }
 
     // Build final headers
@@ -263,12 +339,67 @@ app.all('/api/baserow/*', upload.single('file'), async (req, res) => {
   }
 });
 
+// Proxy a Baserow user file download to bypass CORS and optionally add auth
+app.get('/api/proxy-user-file', async (req, res) => {
+  try {
+    const fileUrl = req.query.url;
+    if (!fileUrl || typeof fileUrl !== 'string') {
+      return res.status(400).json({ error: 'Missing url parameter' });
+    }
+
+    // Basic allowlist to avoid open proxy abuse
+    const parsed = new URL(fileUrl);
+    if (parsed.hostname !== 'baserow.app-inventor.org' || !parsed.pathname.startsWith('/media/user_files/')) {
+      return res.status(400).json({ error: 'URL not allowed' });
+    }
+
+    // Try with JWT first, then fall back to API Token, then unauthenticated
+    let response;
+    const headers = { 'Accept': 'application/octet-stream' };
+    try {
+      const jwt = await getValidJwtToken();
+      response = await fetch(fileUrl, { headers: { ...headers, 'Authorization': `JWT ${jwt}` } });
+    } catch (e) {
+      response = null;
+    }
+
+    if (!response || !response.ok) {
+      try {
+        response = await fetch(fileUrl, { headers: { ...headers, 'Authorization': `Token ${process.env.DATENERFASSUNG_BASEROW_API_TOKEN || ''}` } });
+      } catch (e) {
+        response = null;
+      }
+    }
+
+    if (!response || !response.ok) {
+      response = await fetch(fileUrl, { headers });
+    }
+
+    if (!response.ok) {
+      const txt = await response.text().catch(() => '');
+      return res.status(response.status).send(txt);
+    }
+
+    // Forward content-type and stream body
+    const ct = response.headers.get('content-type');
+    if (ct) res.set('content-type', ct);
+    const cl = response.headers.get('content-length');
+    if (cl) res.set('content-length', cl);
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return res.status(200).send(buffer);
+  } catch (error) {
+    return res.status(500).json({ error: 'Proxy file error', message: error.message });
+  }
+});
+
 // Configuration endpoint used by the frontend to get static IDs
 app.get('/api/config', (req, res) => {
   res.json({
-    tableId: process.env.BASEROW_SOURCE_TABLE_ID || '787',
+    tableId: process.env.BASEROW_SOURCE_TABLE_ID || '1178',
     targetTableId: process.env.BASEROW_TARGET_TABLE_ID || '790',
-    databaseId: process.env.BASEROW_DATABASE_ID || '207'
+    databaseId: process.env.BASEROW_DATABASE_ID || '214',
+    mappingTableId: process.env.BASEROW_MAPPING_TABLE_ID || '784'
   });
 });
 
@@ -277,7 +408,7 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'healthy', 
     timestamp: new Date().toISOString(),
-    hasApiToken: !!process.env.BASEROW_API_TOKEN,
+    hasApiToken: !!process.env.DATENERFASSUNG_BASEROW_API_TOKEN,
     hasCredentials: !!(process.env.BASEROW_USERNAME && process.env.BASEROW_PASSWORD)
   });
 });
@@ -288,7 +419,7 @@ app.get('/api/health', (req, res) => {
     status: 'healthy',
     timestamp: new Date().toISOString(),
     path: '/api/health',
-    hasApiToken: !!process.env.BASEROW_API_TOKEN,
+    hasApiToken: !!process.env.DATENERFASSUNG_BASEROW_API_TOKEN,
     hasCredentials: !!(process.env.BASEROW_USERNAME && process.env.BASEROW_PASSWORD)
   });
 });
@@ -334,6 +465,6 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`[startup] Column Mapper backend listening on :${PORT}`);
   console.log(`[startup] Upload tmp dir: ${tempUploadDir} (max ${MAX_UPLOAD_MB}MB per file)`);
   console.log(`[startup] Frontend serving: ${SERVE_FRONTEND ? 'ENABLED' : 'disabled'} `);
-  console.log(`[startup] Baserow API token: ${masked(process.env.BASEROW_API_TOKEN)}`);
+  console.log(`[startup] Baserow API token: ${masked(process.env.DATENERFASSUNG_BASEROW_API_TOKEN)}`);
   console.log(`[startup] Credentials: user=${process.env.BASEROW_USERNAME ? 'set' : 'missing'} pass=${process.env.BASEROW_PASSWORD ? 'set' : 'missing'}`);
 });

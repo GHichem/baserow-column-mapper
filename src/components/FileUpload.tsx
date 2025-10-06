@@ -16,9 +16,11 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, selectedFile }) =
 
   const allowedTypes = [
     'text/csv',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+    'application/vnd.ms-excel', // .xls
   ];
 
-  const allowedExtensions = ['.csv'];
+  const allowedExtensions = ['.csv', '.xlsx', '.xls'];
 
   const validateFile = (file: File): boolean => {
     const fileExtension = '.' + file.name.split('.').pop()?.toLowerCase();
@@ -26,7 +28,7 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, selectedFile }) =
     if (!allowedTypes.includes(file.type) && !allowedExtensions.includes(fileExtension)) {
       toast({
         title: "Ungültiger Dateityp",
-        description: "Bitte wählen Sie eine .csv Datei aus.",
+        description: "Bitte wählen Sie eine .csv, .xlsx oder .xls Datei aus.",
         variant: "destructive",
       });
       return false;
@@ -110,7 +112,7 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, selectedFile }) =
           ref={fileInputRef}
           type="file"
           onChange={handleFileInputChange}
-          accept=".csv"
+          accept=".csv,.xlsx,.xls"
           className="hidden"
         />
 
@@ -151,7 +153,7 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, selectedFile }) =
                 Datei hier hinziehen oder klicken zum Auswählen
               </p>
               <p className="text-sm text-gray-400">
-                Unterstützte Formate: .csv
+                Unterstützte Formate: .csv, .xlsx, .xls
               </p>
             </div>
             <Button

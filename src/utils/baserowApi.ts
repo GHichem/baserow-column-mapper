@@ -1,5 +1,6 @@
 import { fileStorage, isIndexedDBAvailable } from './fileStorage';
 import { API_CONFIG, getApiConfig } from './apiConfig';
+import * as XLSX from 'xlsx';
 
 interface UploadData {
   vorname: string;
@@ -15,13 +16,14 @@ const BASEROW_CONFIG = {
   // These will be fetched from proxy server instead of environment variables
   jwtToken: '',
   apiToken: '',
-  tableId: '787',
+  tableId: '1178',
   targetTableId: '790',
+  mappingTableId: '784',
   baseUrl: () => {
     const config = getApiConfig();
     return config.isProxyEnabled ? config.proxyBaseUrl : 'https://baserow.app-inventor.org';
   },
-  databaseId: '207',
+  databaseId: '214',
   // These are no longer needed in frontend when using proxy
   username: '',
   password: ''
@@ -136,10 +138,12 @@ const initializeConfig = async () => {
         const serverConfig = await response.json();
         BASEROW_CONFIG.tableId = serverConfig.tableId;
         BASEROW_CONFIG.targetTableId = serverConfig.targetTableId;
+        BASEROW_CONFIG.mappingTableId = serverConfig.mappingTableId;
         BASEROW_CONFIG.databaseId = serverConfig.databaseId;
         console.log('Successfully loaded config from proxy server:', {
           tableId: BASEROW_CONFIG.tableId,
           targetTableId: BASEROW_CONFIG.targetTableId,
+          mappingTableId: BASEROW_CONFIG.mappingTableId,
           databaseId: BASEROW_CONFIG.databaseId
         });
       } else {
@@ -170,6 +174,27 @@ const PERFORMANCE_CONFIG = {
 // Global variable to hold large file content temporarily (avoids storage limitations)
 let TEMP_FILE_CONTENT: string | null = null;
 let TEMP_FILE_METADATA: { name: string; size: number; recordId: string } | null = null;
+
+// --- Excel helpers ---
+const isExcelMimeOrName = (file: File, fileInfo?: any) => {
+  const name = file?.name?.toLowerCase?.() || '';
+  const type = file?.type || fileInfo?.file?.mime_type || '';
+  return (
+    name.endsWith('.xlsx') ||
+    name.endsWith('.xls') ||
+    type.includes('spreadsheetml') ||
+    type === 'application/vnd.ms-excel'
+  );
+};
+
+// Convert an Excel File to CSV text (first sheet)
+const excelFileToCsvText = async (file: File): Promise<string> => {
+  const arrayBuf = await file.arrayBuffer();
+  const wb = XLSX.read(arrayBuf, { type: 'array' });
+  const first = wb.SheetNames[0];
+  const ws = wb.Sheets[first];
+  return XLSX.utils.sheet_to_csv(ws);
+};
 
 // JWT Token caching to avoid re-authentication during long imports
 let CACHED_JWT_TOKEN: string | null = null;
@@ -247,99 +272,56 @@ export const recoverFullFileContentIfNeeded = async (
   }
 
   try {
-    // First try direct fetch from Baserow API with JWT token
-    
+    // Always use backend proxy in proxy mode to avoid CORS completely
+    const config = getApiConfig();
     let response: Response;
     let fetchController = new AbortController();
     let timeoutId = setTimeout(() => fetchController.abort(), 300000); // 5 minute timeout
-    
-    try {
-      // Get fresh JWT token for file access
-      const jwtToken = await getJWTToken();
-      
-      // Try direct access to Baserow file with JWT token
-      response = await fetch(fileInfo.file.url, {
-        method: 'GET',
-        headers: {
-          'Authorization': `JWT ${jwtToken}`,
-          'Accept': 'text/csv,text/plain,application/octet-stream,*/*',
-        },
-        signal: fetchController.signal
-      });
 
+    if (config.isProxyEnabled) {
+      const proxyUrl = `${config.proxyBaseUrl}/api/proxy-user-file?url=${encodeURIComponent(fileInfo.file.url)}`;
+      response = await fetch(proxyUrl, { method: 'GET', signal: fetchController.signal });
       clearTimeout(timeoutId);
-      
-      if (response.ok) {
-        // Success
-      } else {
-        throw new Error(`Direct access failed: ${response.status}`);
+      if (!response.ok) {
+        throw new Error(`Proxy file fetch failed: ${response.status}`);
       }
-    } catch (directError) {
-      // Fallback: Try with API token instead of JWT
-      clearTimeout(timeoutId);
-      
-      // Fallback: Try with API token instead of JWT
-      fetchController = new AbortController();
-      timeoutId = setTimeout(() => fetchController.abort(), 300000);
-      
+    } else {
+      // Fallback (non-proxy environments): try direct with JWT (may hit CORS)
       try {
-        const apiToken = import.meta.env.VITE_BASEROW_API_TOKEN || '';
+        const jwtToken = await getJWTToken();
         response = await fetch(fileInfo.file.url, {
           method: 'GET',
           headers: {
-            'Authorization': `Token ${apiToken}`,
-            'Accept': 'text/csv,text/plain,application/octet-stream,*/*',
+            'Authorization': `JWT ${jwtToken}`,
+            'Accept': 'application/octet-stream,*/*',
           },
           signal: fetchController.signal
         });
-
         clearTimeout(timeoutId);
-        
-        if (response.ok) {
-          // Success
-        } else {
-          throw new Error(`API token access failed: ${response.status}`);
-        }
-      } catch (apiTokenError) {
-        // Last resort: Try without authorization (for public files)
-        clearTimeout(timeoutId);
-        
-        // Last resort: Try without authorization (for public files)
-        fetchController = new AbortController();
-        timeoutId = setTimeout(() => fetchController.abort(), 300000);
-        
-        response = await fetch(fileInfo.file.url, {
-          method: 'GET',
-          headers: {
-            'Accept': 'text/csv,text/plain,application/octet-stream,*/*',
-          },
-          signal: fetchController.signal
-        });
-
-        clearTimeout(timeoutId);
-        
         if (!response.ok) {
-          throw new Error(`All direct access methods failed. Status: ${response.status}`);
-        }
-      }
-    }
-
-    if (!response.ok) {
-      // Try to get error details from response
-      let errorDetails = `${response.status} ${response.statusText}`;
-      try {
-        const errorBody = await response.text();
-        if (errorBody.trim()) {
-          errorDetails = errorBody;
+          throw new Error(`Direct access failed: ${response.status}`);
         }
       } catch (e) {
-        // Response wasn't readable, use status text
+        clearTimeout(timeoutId);
+        // Last resort unauthenticated
+        response = await fetch(fileInfo.file.url, { method: 'GET' });
+        if (!response.ok) {
+          throw new Error(`File fetch failed: ${response.status}`);
+        }
       }
-      
-      throw new Error(`File fetch failed: ${errorDetails}`);
     }
 
-    const fullContent = await response.text();
+    // Convert the fetched payload properly
+    let fullContent: string;
+    const isExcel = isExcelMimeOrName({ name: fileInfo.file?.name || fileInfo.file?.original_name || '', type: fileInfo.file?.mime_type || '' } as any, fileInfo);
+    if (isExcel) {
+      const buf = await response.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      fullContent = XLSX.utils.sheet_to_csv(ws);
+    } else {
+      fullContent = await response.text();
+    }
     const fullLines = fullContent.split(/\r?\n/).filter(line => line.trim());
     
     // Verify that we actually got more content
@@ -361,17 +343,18 @@ export const recoverFullFileContentIfNeeded = async (
           const latestFile = fileField[0];
           // Try downloading with the fresh file URL (direct file download, not through proxy)
           const config = getApiConfig();
-          const jwtToken = config.isProxyEnabled ? '' : await getJWTToken();
-          const freshResponse = await fetch(latestFile.url, {
-            headers: {
-              ...(jwtToken ? { 'Authorization': `JWT ${jwtToken}` } : {}),
-              'Accept': 'text/csv,text/plain,application/octet-stream,*/*',
-            },
-          });
-          
+          const proxyUrl = `${config.proxyBaseUrl}/api/proxy-user-file?url=${encodeURIComponent(latestFile.url)}`;
+          const freshResponse = await fetch(proxyUrl);
           if (freshResponse.ok) {
-            const freshContent = await freshResponse.text();
-            return freshContent;
+            // Try convert for Excel as above
+            const mime = latestFile?.mime_type || '';
+            if (mime.includes('spreadsheetml') || mime === 'application/vnd.ms-excel' || /\.xlsx?$/.test(latestFile?.name || '')) {
+              const buf = await freshResponse.arrayBuffer();
+              const wb = XLSX.read(buf, { type: 'array' });
+              const ws = wb.Sheets[wb.SheetNames[0]];
+              return XLSX.utils.sheet_to_csv(ws);
+            }
+            return await freshResponse.text();
           }
         }
       }
@@ -576,13 +559,13 @@ export const uploadToBaserow = async (data: UploadData): Promise<void> => {
       
       // Then, create a row in the table with the form data and file reference
       const rowData = {
-        field_8123: data.vorname,      // Vorname
-        field_8124: data.nachname,     // Nachname  
-        field_8127: data.email,        // EMAIL
-        field_8125: data.company,      // Company
-        field_53605: data.zielgruppe,  // Zielgruppe (new)
-        field_8126: [fileUploadResult], // Datei
-        field_9206: null,              // CreatedTableId - Will be updated after table creation
+        field_56478: data.vorname,      // Vorname
+        field_56479: data.nachname,     // Nachname  
+        field_56481: data.email,        // EMAIL
+        field_56482: data.company,      // Company
+        field_56480: data.zielgruppe,   // Zielgruppe
+        field_56483: [fileUploadResult], // Datei
+        field_56484: null,              // CreatedTableId - Will be updated after table creation
       };
       const rowResponse = await makeApiCall(`/database/rows/table/${BASEROW_CONFIG.tableId}/`, {
         method: 'POST',
@@ -871,6 +854,10 @@ const processFileInChunks = async (file: File, forUploadProcessing: boolean = fa
  * This function may return truncated content to save browser storage space.
  */
 const processFileForStorage = async (file: File): Promise<string> => {
+  // If Excel, convert to CSV text for downstream parsing/mapping
+  if (isExcelMimeOrName(file)) {
+    return await excelFileToCsvText(file);
+  }
   return await processFileInChunks(file, false); // false = enable storage optimization
 };
 
@@ -879,6 +866,10 @@ const processFileForStorage = async (file: File): Promise<string> => {
  * This function always returns the complete file content, regardless of size.
  */
 const processFileForImport = async (file: File): Promise<string> => {
+  // If Excel, convert to CSV text for import processing
+  if (isExcelMimeOrName(file)) {
+    return await excelFileToCsvText(file);
+  }
   // For import operations, we need the full file content regardless of size
   const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
   let content = '';
@@ -973,10 +964,10 @@ const findExistingRecord = async (vorname: string, nachname: string, email: stri
 
     const data = await response.json();
     const existingRecord = data.results?.find((row: any) => 
-      row.field_8123?.toLowerCase() === vorname.toLowerCase() &&      // Vorname
-      row.field_8124?.toLowerCase() === nachname.toLowerCase() &&     // Nachname
-      row.field_8127?.toLowerCase() === email.toLowerCase() &&        // EMAIL
-      row.field_8125?.toLowerCase() === company.toLowerCase()         // Company
+      row.field_56478?.toLowerCase() === vorname.toLowerCase() &&      // Vorname
+      row.field_56479?.toLowerCase() === nachname.toLowerCase() &&     // Nachname
+      row.field_56481?.toLowerCase() === email.toLowerCase() &&        // EMAIL
+      row.field_56482?.toLowerCase() === company.toLowerCase()         // Company
     );
 
     return existingRecord || null;
@@ -1288,7 +1279,7 @@ const updateRecordWithTableId = async (recordId: number, tableId: string) => {
     const response = await makeApiCall(`/database/rows/table/${BASEROW_CONFIG.tableId}/${recordId}/`, {
       method: 'PATCH',
       body: JSON.stringify({
-        field_9206: tableId,  // CreatedTableId
+        field_56484: tableId,  // CreatedTableId
       }),
     });
 
@@ -1316,6 +1307,31 @@ export const getTableSchema = async (tableId: string) => {
       type: field.type,
     }));
   } catch (error) {
+    throw error;
+  }
+};
+
+// Get filtered column names from mapping table
+export const getMappingTableColumns = async (): Promise<string[]> => {
+  try {
+    const config = getApiConfig();
+    
+    if (config.isProxyEnabled) {
+      // Use proxy server endpoint
+      const response = await fetch(`${config.proxyBaseUrl}/api/mapping-columns`);
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to fetch mapping columns: ${response.status} - ${errorText.substring(0, 100)}`);
+      }
+      
+      const data = await response.json();
+      return data.columns || [];
+    } else {
+      throw new Error('Direct API access for mapping table not implemented. Please use proxy mode.');
+    }
+  } catch (error) {
+    console.error('Error fetching mapping table columns:', error);
     throw error;
   }
 };
@@ -1362,8 +1378,8 @@ export const parseFileHeaders = async (file: File): Promise<string[]> => {
     if (!content) {
       throw new Error('No file content found for header parsing');
     }
-    if (file.name.toLowerCase().endsWith('.csv') || (fileInfo.file?.mime_type?.includes('csv'))) {
-      // Parse CSV
+    if (file.name.toLowerCase().endsWith('.csv') || isExcelMimeOrName(file, fileInfo) || (fileInfo.file?.mime_type?.includes('csv'))) {
+      // Parse CSV text (original CSV or converted Excel)
       const lines = content.split('\n');
       if (lines.length > 0) {
         const headers = parseCSVLine(lines[0]);
@@ -1372,8 +1388,8 @@ export const parseFileHeaders = async (file: File): Promise<string[]> => {
         throw new Error('CSV file appears to be empty');
       }
     } else {
-      // Only CSV files are supported
-      throw new Error('Only CSV files are supported. Please upload a .csv file.');
+      // Fallback unsupported type
+      throw new Error('Unterstützter Dateityp konnte nicht ermittelt werden.');
     }
   } catch (error) {
     throw error;

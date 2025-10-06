@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 import { CheckCircle, AlertCircle, ArrowRight, FileSpreadsheet, Settings } from 'lucide-react';
-import { getTableSchema, parseFileHeaders } from '@/utils/baserowApi';
+import { getTableSchema, parseFileHeaders, getMappingTableColumns } from '@/utils/baserowApi';
 import { smartMatch, calculateSimilarity } from '@/utils/stringMatching';
 import ImportProgressDialog from './ImportProgressDialog';
 
@@ -71,35 +71,53 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
       setIsLoading(true);
       
       // Parse user file headers
-      const fileHeaders = await parseFileHeaders(uploadedFile);
-      setUserColumns(fileHeaders);
+      const allFileHeaders = await parseFileHeaders(uploadedFile);
       
-      // Get target table schema
-      const schema = await getTableSchema('790');
-      const schemaColumns = schema.map((field: any) => field.name);
+      // Filter out ID columns that shouldn't be mapped
+      const filteredHeaders = allFileHeaders.filter(header => {
+        const lowerHeader = header.toLowerCase();
+        return !['id', 'created_on', 'updated_on', 'order', 'created_by', 'last_modified_by'].includes(lowerHeader);
+      });
+      
+      setUserColumns(filteredHeaders);
+      
+      // Get filtered column names from mapping table
+      const schemaColumns = await getMappingTableColumns();
       setTargetColumns(schemaColumns);
       
       // Create initial mappings with smart matching
       const initialMappings: Record<string, ColumnMapping> = {};
       
-      fileHeaders.forEach(userCol => {
+      filteredHeaders.forEach(userCol => {
         const smartMatchResult = smartMatch(userCol, schemaColumns);
         const similarity = smartMatchResult ? calculateSimilarity(userCol, smartMatchResult) : 0;
         
-        initialMappings[userCol] = {
-          userColumn: userCol,
-          targetColumn: smartMatchResult,
-          isMatched: !!smartMatchResult && similarity >= 70,
-          similarity,
-          isIgnored: false,
-        };
+        if (smartMatchResult && similarity >= 70) {
+          // High confidence match to existing column
+          initialMappings[userCol] = {
+            userColumn: userCol,
+            targetColumn: smartMatchResult,
+            isMatched: true,
+            similarity,
+            isIgnored: false,
+          };
+        } else {
+          // No good match found - default to "add new" (blue)
+          initialMappings[userCol] = {
+            userColumn: userCol,
+            targetColumn: null,
+            isMatched: true, // Set to true so it shows as blue (add new)
+            similarity: 0, // No similarity since it's not matching anything
+            isIgnored: false,
+          };
+        }
       });
       
       setMappings(initialMappings);
       
       toast({
         title: "Spalten analysiert",
-        description: `${fileHeaders.length} Spalten gefunden. ${Object.values(initialMappings).filter(m => m.isMatched).length} automatisch zugeordnet.`,
+        description: `${filteredHeaders.length} Spalten gefunden. ${Object.values(initialMappings).filter(m => m.isMatched).length} automatisch zugeordnet.`,
       });
       
     } catch (error) {
@@ -141,6 +159,15 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
           isMatched: false,
           similarity: 0,
           isIgnored: true,
+        };
+      } else if (targetColumn === 'add_new') {
+        // For add_new, we don't set a target column - it will be added as new
+        updated[userColumn] = {
+          ...updated[userColumn],
+          targetColumn: null,
+          isMatched: true, // Consider it "handled" for validation purposes
+          similarity: 0, // No similarity since it's not matching anything
+          isIgnored: false,
         };
       } else {
         updated[userColumn] = {
@@ -203,10 +230,16 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
       
       Object.entries(mappings).forEach(([userCol, mapping]) => {
         if (mapping.targetColumn && !mapping.isIgnored) {
+          // Regular mapping to existing column
           finalMappings[userCol] = mapping.targetColumn;
-        } else if (!mapping.isIgnored && !mapping.targetColumn) {
+        } else if (!mapping.isIgnored && !mapping.targetColumn && mapping.isMatched) {
+          // This is an "add_new" case - use the user column as the new column name
+          finalMappings[userCol] = userCol;
+        } else if (!mapping.isIgnored && !mapping.targetColumn && !mapping.isMatched) {
+          // Truly unmapped column
           unmappedColumns.push(userCol);
         }
+        // Ignored columns are not included in finalMappings
       });
       
       // Check if there are any mappings at all
@@ -354,7 +387,7 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
             </h1>
           </div>
           <p className="text-gray-300 text-lg max-w-2xl mx-auto leading-relaxed">
-            Ordnen Sie die Spalten Ihrer Datei den Zielfeldern zu. Automatisch erkannte Zuordnungen sind grün markiert.
+            Ordnen Sie die Spalten Ihrer Datei zu: 🎯 <strong>Bestehende Spalte</strong> zuordnen, ➕ <strong>Neue Spalte hinzufügen</strong>, oder ❌ <strong>Ignorieren</strong>. Automatisch erkannte Zuordnungen sind grün markiert.
           </p>
         </div>
 
@@ -416,19 +449,28 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
                 
                 // Prepare options for SearchableSelect
                 const selectOptions = [
-                  { value: 'ignore', label: 'Ignorieren' },
-                  ...availableColumns.map(col => ({ value: col, label: col })),
+                  { value: 'ignore', label: '❌ Ignorieren' },
+                  { value: 'add_new', label: '➕ Als neue Spalte hinzufügen' },
+                  ...availableColumns.map(col => ({ value: col, label: `🎯 ${col}` })),
                   // Include current mapping even if not available
                   ...(mapping.targetColumn && !availableColumns.includes(mapping.targetColumn) 
-                    ? [{ value: mapping.targetColumn, label: mapping.targetColumn }] 
+                    ? [{ value: mapping.targetColumn, label: `🎯 ${mapping.targetColumn}` }] 
                     : [])
                 ];
+                
+                // Determine placeholder text based on mapping state
+                const getPlaceholderText = () => {
+                  if (mapping.isIgnored) return 'Ignoriert';
+                  if (mapping.targetColumn) return mapping.targetColumn;
+                  return 'Neue Spalte wird hinzugefügt';
+                };
                 
                 const isUnmapped = !mapping.isMatched && !mapping.isIgnored;
                 const shouldHighlight = highlightUnmapped && isUnmapped;
                 const isSpeciallyHighlighted = highlightedColumns.has(userColumn);
+                const isAddNew = mapping.isMatched && !mapping.targetColumn && !mapping.isIgnored;
                 
-                const isLocked = mapping.isMatched && mapping.similarity === 100;
+                const isLocked = mapping.isMatched && mapping.similarity === 100 && mapping.targetColumn;
                 return (
                   <div
                     key={index}
@@ -438,8 +480,10 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
                     className={`group p-6 rounded-xl border-2 transition-all duration-500 hover:shadow-lg ${
                       shouldHighlight || isSpeciallyHighlighted
                         ? 'border-red-400/90 bg-gradient-to-r from-red-900/60 to-rose-900/60 shadow-red-500/40 hover:shadow-red-500/60 ring-2 ring-red-400/30 animate-flash-once'
-                        : mapping.isMatched
+                        : mapping.isMatched && mapping.targetColumn
                         ? 'border-green-400/50 bg-gradient-to-r from-green-900/30 to-emerald-900/30 shadow-green-500/20 hover:shadow-green-500/40'
+                        : isAddNew
+                        ? 'border-blue-400/50 bg-gradient-to-r from-blue-900/30 to-cyan-900/30 shadow-blue-500/20 hover:shadow-blue-500/40'
                         : mapping.isIgnored
                         ? 'border-orange-400/50 bg-gradient-to-r from-orange-900/30 to-yellow-900/30 shadow-orange-500/20 hover:shadow-orange-500/40'
                         : 'border-slate-600/50 bg-gradient-to-r from-slate-800/50 to-slate-700/50 shadow-slate-500/20 hover:shadow-slate-500/40 hover:border-slate-500/70'
@@ -450,17 +494,24 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-3">
                             <Badge variant="outline" className={`font-mono text-sm px-3 py-1 font-medium ${
-                              mapping.isMatched 
+                              mapping.isMatched && mapping.targetColumn
                                 ? 'border-green-400/50 bg-green-500/20 text-green-300'
+                                : isAddNew
+                                ? 'border-blue-400/50 bg-blue-500/20 text-blue-300'
                                 : mapping.isIgnored
                                 ? 'border-orange-400/50 bg-orange-500/20 text-orange-300'
                                 : 'border-slate-400/50 bg-slate-500/20 text-slate-300'
                             }`}>
                               {userColumn}
                             </Badge>
-                            {mapping.isMatched && (
+                            {mapping.isMatched && mapping.targetColumn && (
                               <Badge className="bg-gradient-to-r from-green-600 to-emerald-600 text-white border-0 shadow-lg shadow-green-500/30 animate-pulse">
                                 {mapping.similarity}% Match
+                              </Badge>
+                            )}
+                            {isAddNew && (
+                              <Badge className="bg-gradient-to-r from-blue-600 to-cyan-600 text-white border-0 shadow-lg shadow-blue-500/30">
+                                Neue Spalte
                               </Badge>
                             )}
                           </div>
@@ -476,9 +527,9 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
                           <div className={isLocked ? 'pointer-events-none opacity-70' : ''}>
                             <SimpleSelect
                               id={`column-select-${index}`}
-                              value={mapping.isIgnored ? 'ignore' : mapping.targetColumn || ''}
+                              value={mapping.isIgnored ? 'ignore' : mapping.targetColumn || 'add_new'}
                               onValueChange={(value) => handleMappingChange(userColumn, value)}
-                              placeholder="Zielfeld auswählen..."
+                              placeholder={getPlaceholderText()}
                               options={selectOptions}
                             />
                           </div>
@@ -486,10 +537,15 @@ const ColumnMapping: React.FC<ColumnMappingProps> = ({ uploadedFile, onMappingCo
                       </div>
                       
                       <div className="flex-shrink-0">
-                        {mapping.isMatched ? (
+                        {mapping.isMatched && mapping.targetColumn ? (
                           <div className="relative">
                             <CheckCircle className="h-6 w-6 text-green-400" />
                             <div className="absolute inset-0 rounded-full bg-green-400/20"></div>
+                          </div>
+                        ) : isAddNew ? (
+                          <div className="relative">
+                            <CheckCircle className="h-6 w-6 text-blue-400" />
+                            <div className="absolute inset-0 rounded-full bg-blue-400/20"></div>
                           </div>
                         ) : mapping.isIgnored ? (
                           <AlertCircle className="h-6 w-6 text-orange-400" />

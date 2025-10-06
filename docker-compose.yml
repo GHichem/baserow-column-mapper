@@ -8,9 +8,9 @@ services:
       - /app/node_modules
     environment:
       - NODE_ENV=development
-      - VITE_API_URL=http://localhost:3001
+      - VITE_API_URL=http://localhost:3051
       - VITE_USE_PROXY=true
-      - VITE_PROXY_URL=http://backend:3051
+      - VITE_PROXY_URL=http://localhost:3051
     depends_on:
       - backend
     networks:
